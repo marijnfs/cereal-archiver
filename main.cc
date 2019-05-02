@@ -14,6 +14,10 @@
 #include <cereal/types/memory.hpp>
 #include <blake2.h>
 
+#include <glib-2.0/gio/gio.h>
+#include <glib.h>
+
+
 using namespace std;
 
 typedef vector<uint8_t> Bytes;
@@ -252,9 +256,37 @@ PBytes get_hash(Bytes &bytes) {
   return hash;
 }
 
+DB db;
 
-int main() {
+void backup(GFile *path, string backup_name, string backup_description) {
+
+}
+
+
+int main(int argc, char **argv) {
   init_blakekey();
+  
+  if (argc < 2) {
+    cerr << "no command given, use: " << argv[0] << " [command] [options]" << endl;
+    cerr << "command = [archive, dryrun, duplicate, filelist, list, output, stats]" << endl;
+    return -1;
+  }
+ 
+  string command(argv[1]);
+  if (command == "archive") {
+    if (argc < 4) {
+      cerr << "usage: " << argv[0] << " " << command << " [name] [path] <description>" << endl;
+      return -1;
+    }
+    string name(argv[2]);
+    string description;
+    if (argc > 4)
+      description = string(argv[4]);
 
+    GFile *file = g_file_new_for_path(argv[3]);  
+    backup(file, name, description);
+  } else {
+    
+  }
   
 }
