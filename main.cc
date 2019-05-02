@@ -24,6 +24,7 @@ typedef vector<uint8_t> Bytes;
 typedef unique_ptr<Bytes> PBytes;
 
 uint HASH_BYTES(32);
+uint64_t MAX_FILESIZE(0);
 uint64_t MULTIPART_SIZE(uint64_t(2) << 30);
 uint8_t blakekey[BLAKE2B_KEYBYTES];
 
@@ -200,7 +201,7 @@ struct DB {
 
 enum EntryType {
     File,
-    Dir,
+    Directory,
     MultiPart
 };
 
@@ -226,13 +227,13 @@ struct MultiFile {
 };
 
 struct Dir {
-  vector<Bytes> hashes;
+  vector<Entry> entries;
   uint64_t size;
 
   template <class Archive>
   void serialize( Archive & ar ) {
-    ar(hashes, size);
-  }  
+    ar(entries, size);
+  }
 };
 
 struct Backup {
@@ -248,20 +249,110 @@ struct Backup {
   }
 };
 
-
-PBytes get_hash(Bytes &bytes) {
+PBytes get_hash(uint8_t *data, uint64_t len) {
   auto hash = make_unique<Bytes>(HASH_BYTES);
-  if (blake2b(hash->data(), bytes.data(), blakekey, HASH_BYTES, bytes.size(), BLAKE2B_KEYBYTES) < 0)
+  if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len, BLAKE2B_KEYBYTES) < 0)
     throw StringException("hash problem");
   return hash;
 }
 
-DB db;
-
-void backup(GFile *path, string backup_name, string backup_description) {
-
+PBytes get_hash(Bytes &bytes) {
+  return get_hash((uint8_t*)bytes.data(), bytes.size());
 }
 
+
+string timestring(uint64_t timestamp) {
+ std::tm * ptm = std::localtime((time_t*)&timestamp);
+ char buffer[32];
+ // Format: Mo, 15.06.2009 20:20:00
+ std::strftime(buffer, 32, "%a, %d.%m.%Y %H:%M:%S", ptm); 
+ return string(buffer, 32);
+}
+
+DB db;
+
+tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
+  GFileEnumerator *enumerator;
+  GError *error = NULL;
+  
+  enumerator = g_file_enumerate_children(
+                                         path, "*", G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, &error);
+  if (error != NULL) {
+    cerr << error->message << endl;
+    return tuple<PBytes, uint64_t>(PBytes(), 0);
+  }
+
+  Dir dir;
+  uint64_t total_size(0);
+  
+  while (TRUE) {
+    GFile *child;
+    GFileInfo *finfo;
+    char *relative_path;
+    char *base_name;
+    
+    //grab next file
+    if (!g_file_enumerator_iterate(enumerator, &finfo, &child, NULL, &error))
+      break;
+    if (!finfo)
+      break;
+
+    //get it's name, path and type
+    base_name = g_file_get_basename(child);
+    relative_path = g_file_get_relative_path(root, child);
+    auto file_type = g_file_info_get_file_type(finfo);
+
+    //skip special files, like sockets
+    if (file_type == G_FILE_TYPE_SPECIAL) {
+      cerr << "SKIPPING SPECIAL FILE: " << base_name << endl;
+      continue;
+    }
+    
+    //skip database file
+    if (string("archiver.db") == base_name) {
+      cerr << "SKIPPING DATABASE FILE: " << base_name << endl;
+      continue;
+    }
+    
+    //handle directories by recursively calling enumerate, which returns a hash and total size
+    if (file_type == G_FILE_TYPE_DIRECTORY) {
+      auto [hash, n] = enumerate(root, child);
+      dir.entries.push_back(Entry{base_name, n, *hash, Directory});
+      total_size += n;
+    } else { //It's a normal file, depending on size store it as one blob or multipart     
+      goffset filesize = g_file_info_get_size(finfo);
+      cerr << filesize << " " << relative_path << endl;
+
+      if (MAX_FILESIZE && filesize > MAX_FILESIZE) { //on first pass ignore huge files
+        cerr << "skipping: " << relative_path << " " << filesize << endl;
+        continue;
+      }
+      
+      if (filesize < MULTIPART_SIZE) {
+        gchar *data = 0;
+        gsize len(0);
+        if (!g_file_get_contents(g_file_get_path(child), &data, &len, &error)) {
+          cerr << "Read Error: " << g_file_get_path(child) << endl;
+          continue;
+        }
+        cerr << "len: " << len << endl;
+        auto hash = get_hash((uint8_t*)data, len);
+        db.put(hash->data(), (uint8_t*)data, hash->size(), len, NOOVERWRITE);
+      } else { //Too big for direct storage, Multipart file
+      }
+    }   
+  }
+}
+
+void backup(GFile *path, string backup_name, string backup_description) {
+  
+}
+
+PBytes get_root_hash() {
+  string root_str("ROOT");
+  auto root_hash = db.get((uint8_t*)&root_str[0], root_str.size());
+  return move(root_hash);
+}
 
 int main(int argc, char **argv) {
   init_blakekey();
@@ -283,7 +374,7 @@ int main(int argc, char **argv) {
     if (argc > 4)
       description = string(argv[4]);
 
-    GFile *file = g_file_new_for_path(argv[3]);  
+    GFile *file = g_file_new_for_path(argv[3]);
     backup(file, name, description);
   } else {
     
