@@ -58,6 +58,16 @@ std::string user_readable_size(uint64_t size_) {
 
 char *DBNAME = "archiver.db";
 
+PBytes get_hash(uint8_t *data, uint64_t len) {
+  auto hash = make_unique<Bytes>(HASH_BYTES);
+  if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len, BLAKE2B_KEYBYTES) < 0)
+    throw StringException("hash problem");
+  return hash;
+}
+
+PBytes get_hash(Bytes &bytes) {
+  return get_hash((uint8_t*)bytes.data(), bytes.size());
+}
 
 enum Overwrite {
   OVERWRITE = 0,
@@ -158,15 +168,15 @@ struct DB {
   
 
   template <typename T>
-  PBytes store(T &data) {
+  PBytes store(T &value) {
     ostringstream oss;
     {
       cereal::PortableBinaryOutputArchive ar(oss);
-      ar(data);
+      ar(value);
 	}
-    data = make_unique<Bytes>(oss.str().begin(), oss.str().end());
+    auto data = make_unique<Bytes>(oss.str().begin(), oss.str().end());
     auto key = get_hash(*data);
-    put(*key, *data);
+    put(*key, *data, NOOVERWRITE);
     return move(key);
   }
 
@@ -202,7 +212,7 @@ struct DB {
 enum EntryType {
     File,
     Directory,
-    MultiPart
+    Multi
 };
 
 struct Entry {
@@ -217,7 +227,7 @@ struct Entry {
   }  
 };
 
-struct MultiFile {
+struct MultiPart {
   vector<Bytes> hashes;
   
   template <class Archive>
@@ -236,6 +246,17 @@ struct Dir {
   }
 };
 
+struct Root {
+  vector<Bytes> backups;
+  Bytes last_root;
+  uint64_t timestamp;
+
+  template <class Archive>
+  void serialize( Archive & ar ) {
+    ar(backups, last_root, timestamp);
+  }
+};
+
 struct Backup {
   string name;
   string description;
@@ -248,17 +269,6 @@ struct Backup {
     ar(name, description, size, hash, timestamp);
   }
 };
-
-PBytes get_hash(uint8_t *data, uint64_t len) {
-  auto hash = make_unique<Bytes>(HASH_BYTES);
-  if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len, BLAKE2B_KEYBYTES) < 0)
-    throw StringException("hash problem");
-  return hash;
-}
-
-PBytes get_hash(Bytes &bytes) {
-  return get_hash((uint8_t*)bytes.data(), bytes.size());
-}
 
 
 string timestring(uint64_t timestamp) {
@@ -319,7 +329,8 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
       auto [hash, n] = enumerate(root, child);
       dir.entries.push_back(Entry{base_name, n, *hash, Directory});
       total_size += n;
-    } else { //It's a normal file, depending on size store it as one blob or multipart     
+    } else { 
+      //It's a normal file, depending on size store it as one blob or multipart     
       goffset filesize = g_file_info_get_size(finfo);
       cerr << filesize << " " << relative_path << endl;
 
@@ -329,6 +340,7 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
       }
       
       if (filesize < MULTIPART_SIZE) {
+        //File small enough, store diretly
         gchar *data = 0;
         gsize len(0);
         if (!g_file_get_contents(g_file_get_path(child), &data, &len, &error)) {
@@ -338,14 +350,49 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
         cerr << "len: " << len << endl;
         auto hash = get_hash((uint8_t*)data, len);
         db.put(hash->data(), (uint8_t*)data, hash->size(), len, NOOVERWRITE);
-      } else { //Too big for direct storage, Multipart file
+        dir.entries.push_back(Entry{base_name, len, *hash, File});
+        total_size += len;
+      } else {
+        //Too big for direct storage, Multipart file
+        vector<uint8_t> data(MULTIPART_SIZE);
+        auto input_stream = g_file_read (child, NULL, &error);
+        if (error != NULL)
+          throw StringException(error->message);
+        
+        MultiPart multipart;
+        gsize len(0);
+        while (true) {
+          gsize bytes_read = g_input_stream_read(G_INPUT_STREAM(input_stream),
+                                               (void*)&data[0],
+                                               MULTIPART_SIZE,
+                                               NULL,
+                                               &error);
+          if (error != NULL)
+            throw StringException(error->message);
+          
+          if (bytes_read == 0)
+            break;
+          len += bytes_read;
+          
+          auto hash = get_hash((uint8_t*)&data[0], bytes_read);
+          multipart.hashes.push_back(*hash);
+          
+          db.put(hash->data(), (uint8_t*)&data[0], hash->size(), bytes_read, NOOVERWRITE); //store part in database
+        }
+        auto hash = db.store(multipart);
+        dir.entries.push_back(Entry{base_name, len, *hash, Multi});
+        total_size += len;
       }
-    }   
+    }
+    g_assert(relative_path != NULL);
+    g_free(relative_path);
+    g_free(base_name);
   }
-}
+  g_file_enumerator_close(enumerator, NULL, &error);
 
-void backup(GFile *path, string backup_name, string backup_description) {
-  
+  //now store the dir
+  auto hash = db.store(dir);
+  return tuple<PBytes, uint64_t>(move(hash), total_size);
 }
 
 PBytes get_root_hash() {
@@ -353,6 +400,35 @@ PBytes get_root_hash() {
   auto root_hash = db.get((uint8_t*)&root_str[0], root_str.size());
   return move(root_hash);
 }
+
+void save_root_hash(Bytes hash) {
+  string root_str("ROOT");
+  db.put((uint8_t*)&root_str[0], hash.data(), root_str.size(), hash.size());
+}
+
+void backup(GFile *path, string backup_name, string backup_description) {
+  Backup backup{backup_name, backup_description};
+  {
+    auto [hash, n] = enumerate(path, path);
+    backup.hash = *hash;
+    backup.size = n;
+    backup.timestamp = std::time(0);
+  }
+
+  auto backup_hash = db.store(backup);
+
+  Root new_root;
+  auto last_root_hash = get_root_hash();
+  if (last_root_hash) {
+    auto last_root = db.load<Root>(*last_root_hash);
+    new_root.last_root = *last_root_hash;
+    new_root.backups = last_root->backups;
+  }
+  new_root.timestamp = std::time(0);
+  auto new_root_hash = db.store(new_root);
+  save_root_hash(*new_root_hash);
+}
+
 
 int main(int argc, char **argv) {
   init_blakekey();
