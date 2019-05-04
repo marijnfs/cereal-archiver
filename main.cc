@@ -17,6 +17,7 @@
 #include <glib-2.0/gio/gio.h>
 #include <glib.h>
 
+#include "print.h"
 
 using namespace std;
 
@@ -56,13 +57,13 @@ std::string user_readable_size(uint64_t size_) {
   return oss.str();
 }
 
-char *DBNAME = "archiver.db";
+string DBNAME = "archiver.db";
 
 PBytes get_hash(uint8_t *data, uint64_t len) {
   auto hash = make_unique<Bytes>(HASH_BYTES);
   if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len, BLAKE2B_KEYBYTES) < 0)
     throw StringException("hash problem");
-  return hash;
+  return move(hash);
 }
 
 PBytes get_hash(Bytes &bytes) {
@@ -78,9 +79,9 @@ struct DB {
   DB() {
     std::cerr << "opening" << std::endl;
     c(mdb_env_create(&env));
-    c(mdb_env_set_mapsize(env, size_t(1) << 40)); // One TB
+    c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
     //c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
-    c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC, 0664));
+    c(mdb_env_open(env, DBNAME.c_str(), MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC, 0664));
     
     c(mdb_txn_begin(env, NULL, 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
@@ -98,20 +99,21 @@ struct DB {
 
   //put function for vector types
   bool put(Bytes &key, Bytes &data, Overwrite overwrite) {
-    return put(reinterpret_cast<uint8_t *>(&key[0]),
-        reinterpret_cast<uint8_t *>(&data[0]), key.size(),
-        data.size(), overwrite);
+    return put(key.data(), data.data(), 
+              key.size(), data.size(), overwrite);
   }
 
   //classic byte pointer put function
-  bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite = OVERWRITE) {
+  bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
     std::cerr << key_len << " " << data_len << std::endl;
     MDB_val mkey{key_len, key}, mdata{data_len, data};
 
     c(mdb_txn_begin(env, NULL, 0, &txn));
     int result = mdb_put(txn, dbi, &mkey, &mdata, (overwrite == NOOVERWRITE) ? MDB_NOOVERWRITE : 0);
-    if (result == MDB_KEYEXIST)
+    if (result == MDB_KEYEXIST) {
+      c(mdb_txn_commit(txn));
       return false;
+    }
     c(result);
     c(mdb_txn_commit(txn));
 
@@ -123,17 +125,19 @@ struct DB {
     MDB_val mdata;
     c(mdb_txn_begin(env, NULL, 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
-    if (result == MDB_NOTFOUND)
+    if (result == MDB_NOTFOUND) {
+      c(mdb_txn_commit(txn));
       return nullptr;
+    }
     auto ret_val = make_unique<Bytes>(reinterpret_cast<uint8_t *>(mdata.mv_data),
                              reinterpret_cast<uint8_t *>(mdata.mv_data) +
-                                            mdata.mv_size); 
+                                            mdata.mv_size);
     c(mdb_txn_commit(txn));
     return ret_val;
   }
 
   PBytes get(std::vector<uint8_t> &key) {
-    return get(&key[0], key.size());
+    return get(key.data(), key.size());
   }
 
   bool has(std::vector<uint8_t> &key) {
@@ -173,8 +177,10 @@ struct DB {
     {
       cereal::PortableBinaryOutputArchive ar(oss);
       ar(value);
-	}
-    auto data = make_unique<Bytes>(oss.str().begin(), oss.str().end());
+      oss.flush();
+  	}
+    auto contiguous_buf = oss.str();
+    auto data = make_unique<Bytes>(contiguous_buf.begin(), contiguous_buf.end());
     auto key = get_hash(*data);
     put(*key, *data, NOOVERWRITE);
     return move(key);
@@ -192,7 +198,7 @@ struct DB {
       cereal::PortableBinaryInputArchive ar(iss);
       ar(*value);
     }
-    return move(value);
+    return value;
   }
 
   int rc;
@@ -311,7 +317,8 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
     base_name = g_file_get_basename(child);
     relative_path = g_file_get_relative_path(root, child);
     auto file_type = g_file_info_get_file_type(finfo);
-
+    auto full_path = g_file_get_path(child);
+    print(relative_path);
     //skip special files, like sockets
     if (file_type == G_FILE_TYPE_SPECIAL) {
       cerr << "SKIPPING SPECIAL FILE: " << base_name << endl;
@@ -319,7 +326,7 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
     }
     
     //skip database file
-    if (string("archiver.db") == base_name) {
+    if (DBNAME == base_name || (DBNAME + "-lock") == base_name) {
       cerr << "SKIPPING DATABASE FILE: " << base_name << endl;
       continue;
     }
@@ -343,12 +350,13 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
         //File small enough, store diretly
         gchar *data = 0;
         gsize len(0);
-        if (!g_file_get_contents(g_file_get_path(child), &data, &len, &error)) {
-          cerr << "Read Error: " << g_file_get_path(child) << endl;
+        if (!g_file_get_contents(full_path, &data, &len, &error)) {
+          cerr << "Read Error: " << full_path << endl;
           continue;
         }
         cerr << "len: " << len << endl;
         auto hash = get_hash((uint8_t*)data, len);
+
         db.put(hash->data(), (uint8_t*)data, hash->size(), len, NOOVERWRITE);
         dir.entries.push_back(Entry{base_name, len, *hash, File});
         total_size += len;
@@ -387,8 +395,9 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
     g_assert(relative_path != NULL);
     g_free(relative_path);
     g_free(base_name);
+    g_free(full_path);
   }
-  g_file_enumerator_close(enumerator, NULL, &error);
+  g_object_unref(enumerator);
 
   //now store the dir
   auto hash = db.store(dir);
@@ -403,7 +412,7 @@ PBytes get_root_hash() {
 
 void save_root_hash(Bytes hash) {
   string root_str("ROOT");
-  db.put((uint8_t*)&root_str[0], hash.data(), root_str.size(), hash.size());
+  db.put((uint8_t*)&root_str[0], hash.data(), root_str.size(), hash.size(), OVERWRITE);
 }
 
 void backup(GFile *path, string backup_name, string backup_description) {
@@ -429,6 +438,14 @@ void backup(GFile *path, string backup_name, string backup_description) {
   save_root_hash(*new_root_hash);
 }
 
+void list_backups() {
+  auto root_hash = get_root_hash();
+  auto root = db.load<Root>(*root_hash);
+  for (auto bhash : root->backups) {
+    auto backup = db.load<Backup>(bhash);
+    print(backup->name);
+  }
+}
 
 int main(int argc, char **argv) {
   init_blakekey();
@@ -452,8 +469,11 @@ int main(int argc, char **argv) {
 
     GFile *file = g_file_new_for_path(argv[3]);
     backup(file, name, description);
+  } else if (command == "stat") {
+    db.print_stat();
+  } else if (command == "list") {
+    list_backups();
   } else {
-    
-  }
-  
+    print("No such command");
+  }  
 }
