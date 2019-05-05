@@ -12,7 +12,7 @@
 #include <cereal/types/unordered_map.hpp>
 #include <cereal/types/vector.hpp>
 #include <cereal/types/memory.hpp>
-#include <blake2.h>
+#include "blake2.h"
 
 #include <glib-2.0/gio/gio.h>
 #include <glib.h>
@@ -59,7 +59,9 @@ string DBNAME = "archiver.db";
 
 PBytes get_hash(uint8_t *data, uint64_t len) {
   auto hash = make_unique<Bytes>(HASH_BYTES);
-  if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len, BLAKE2B_KEYBYTES) < 0)
+  //Old Blake2b API
+  // if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len, BLAKE2B_KEYBYTES) < 0)
+  if (blake2b(hash->data(), HASH_BYTES, data, len, blakekey, BLAKE2B_KEYBYTES) < 0)
     throw StringException("hash problem");
   return move(hash);
 }
@@ -277,11 +279,12 @@ struct Entry {
   EntryType type;
   uint64_t size = 0;
   uint64_t timestamp = 0;
+  uint64_t access = 0;
   bool active = false;
 
   template <class Archive>
   void serialize( Archive & ar ) {
-    ar(name, size, hash, type);
+    ar(name, hash, type, size, timestamp, access, active);
   }  
 };
 
@@ -296,11 +299,10 @@ struct MultiPart {
 
 struct Dir {
   vector<Entry> entries;
-  uint64_t size;
 
   template <class Archive>
   void serialize( Archive & ar ) {
-    ar(entries, size);
+    ar(entries);
   }
 };
 
