@@ -2,6 +2,18 @@
 
 #include <iostream>
 
+typedef std::vector<uint8_t> Bytes;
+typedef std::unique_ptr<Bytes> PBytes;
+
+inline std::ostream &operator<<(std::ostream &out, Bytes const &b) {
+  out << std::hex;
+  for (auto abyte : b)
+  	out << b;
+  return out;
+  //return std::cout << b.str();
+}
+
+
 void print() {
 }
 

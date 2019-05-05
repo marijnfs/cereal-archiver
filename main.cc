@@ -17,12 +17,10 @@
 #include <glib-2.0/gio/gio.h>
 #include <glib.h>
 
-#include "print.h"
+
+#include "bytes.h"
 
 using namespace std;
-
-typedef vector<uint8_t> Bytes;
-typedef unique_ptr<Bytes> PBytes;
 
 uint HASH_BYTES(32);
 uint64_t MAX_FILESIZE(0);
@@ -76,12 +74,12 @@ enum Overwrite {
 };
 
 struct DB {
-  DB() {
-    std::cerr << "opening" << std::endl;
+  DB(string db_path, bool read_only = false) {
+    std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
     //c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
-    c(mdb_env_open(env, DBNAME.c_str(), MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC, 0664));
+    c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     
     c(mdb_txn_begin(env, NULL, 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
@@ -169,8 +167,6 @@ struct DB {
 
   }
 
-  
-
   template <typename T>
   PBytes store(T &value) {
     ostringstream oss;
@@ -201,6 +197,60 @@ struct DB {
     return value;
   }
 
+  void iterate_all(function<void(Bytes &, Bytes&)> func) {
+    MDB_cursor *cursor;
+    mdb_txn_begin(env, NULL, 0, &txn);
+    c(mdb_cursor_open(txn, dbi, &cursor));
+
+    MDB_val key, value;
+
+    c(mdb_cursor_get(cursor, &key, &value, MDB_FIRST));
+
+    while (true) {
+      Bytes bkey(reinterpret_cast<uint8_t *>(key.mv_data),
+                             reinterpret_cast<uint8_t *>(key.mv_data) +
+                                            key.mv_size);
+      Bytes bvalue(reinterpret_cast<uint8_t *>(value.mv_data),
+                             reinterpret_cast<uint8_t *>(value.mv_data) +
+                                            value.mv_size);
+      func(bkey, bvalue);
+      if (mdb_cursor_get(cursor, &key, &value, MDB_NEXT))
+        break;
+    }
+    
+    mdb_txn_commit(txn);
+    mdb_cursor_close(cursor);
+  }
+
+  void check_all() {
+    MDB_cursor *cursor;
+    mdb_txn_begin(env, NULL, 0, &txn);
+    c(mdb_cursor_open(txn, dbi, &cursor));
+
+    MDB_val key, value;
+
+    c(mdb_cursor_get(cursor, &key, &value, MDB_FIRST));
+
+    while (true) {
+      Bytes bkey(reinterpret_cast<uint8_t *>(key.mv_data),
+                             reinterpret_cast<uint8_t *>(key.mv_data) +
+                                            key.mv_size);
+      Bytes bvalue(reinterpret_cast<uint8_t *>(value.mv_data),
+                             reinterpret_cast<uint8_t *>(value.mv_data) +
+                                            value.mv_size);
+      auto hash = get_hash((uint8_t*)value.mv_data, value.mv_size);
+      if (*hash != bkey)
+        println("nonmatch for: ", bkey);
+      // println("b: ", bkey);
+      // println(bkey, " == ", *hash);
+      if (mdb_cursor_get(cursor, &key, &value, MDB_NEXT))
+        break;
+    }
+    
+    mdb_txn_commit(txn);
+    mdb_cursor_close(cursor);
+  }
+
   int rc;
   MDB_env *env = 0;
   MDB_dbi dbi;
@@ -223,9 +273,11 @@ enum EntryType {
 
 struct Entry {
   string name;
-  uint64_t size;
   Bytes hash;
   EntryType type;
+  uint64_t size = 0;
+  uint64_t timestamp = 0;
+  bool active = false;
 
   template <class Archive>
   void serialize( Archive & ar ) {
@@ -279,13 +331,13 @@ struct Backup {
 
 string timestring(uint64_t timestamp) {
  std::tm * ptm = std::localtime((time_t*)&timestamp);
- char buffer[32];
+ char buffer[64];
  // Format: Mo, 15.06.2009 20:20:00
- std::strftime(buffer, 32, "%a, %d.%m.%Y %H:%M:%S", ptm); 
- return string(buffer, 32);
+ size_t len = std::strftime(buffer, 64, "%a, %d.%m.%Y %H:%M:%S", ptm); 
+ return string(buffer, len);
 }
 
-DB db;
+unique_ptr<DB> db;
 
 tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
   GFileEnumerator *enumerator;
@@ -318,7 +370,10 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
     relative_path = g_file_get_relative_path(root, child);
     auto file_type = g_file_info_get_file_type(finfo);
     auto full_path = g_file_get_path(child);
-    print(relative_path);
+    GTimeVal gtime;
+    g_file_info_get_modification_time (finfo, &gtime);
+    uint64_t timestamp = gtime.tv_sec;
+
     //skip special files, like sockets
     if (file_type == G_FILE_TYPE_SPECIAL) {
       cerr << "SKIPPING SPECIAL FILE: " << base_name << endl;
@@ -334,7 +389,7 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
     //handle directories by recursively calling enumerate, which returns a hash and total size
     if (file_type == G_FILE_TYPE_DIRECTORY) {
       auto [hash, n] = enumerate(root, child);
-      dir.entries.push_back(Entry{base_name, n, *hash, Directory});
+      dir.entries.push_back(Entry{base_name, *hash, Directory, n, timestamp, true});
       total_size += n;
     } else { 
       //It's a normal file, depending on size store it as one blob or multipart     
@@ -357,8 +412,8 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
         cerr << "len: " << len << endl;
         auto hash = get_hash((uint8_t*)data, len);
 
-        db.put(hash->data(), (uint8_t*)data, hash->size(), len, NOOVERWRITE);
-        dir.entries.push_back(Entry{base_name, len, *hash, File});
+        db->put(hash->data(), (uint8_t*)data, hash->size(), len, NOOVERWRITE);
+        dir.entries.push_back(Entry{base_name, *hash, File, len, timestamp, true});
         total_size += len;
       } else {
         //Too big for direct storage, Multipart file
@@ -385,10 +440,10 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
           auto hash = get_hash((uint8_t*)&data[0], bytes_read);
           multipart.hashes.push_back(*hash);
           
-          db.put(hash->data(), (uint8_t*)&data[0], hash->size(), bytes_read, NOOVERWRITE); //store part in database
+          db->put(hash->data(), (uint8_t*)&data[0], hash->size(), bytes_read, NOOVERWRITE); //store part in database
         }
-        auto hash = db.store(multipart);
-        dir.entries.push_back(Entry{base_name, len, *hash, Multi});
+        auto hash = db->store(multipart);
+        dir.entries.push_back(Entry{base_name, *hash, Multi, len, timestamp, true});
         total_size += len;
       }
     }
@@ -400,20 +455,47 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
   g_object_unref(enumerator);
 
   //now store the dir
-  auto hash = db.store(dir);
+  auto hash = db->store(dir);
   return tuple<PBytes, uint64_t>(move(hash), total_size);
 }
 
-PBytes get_root_hash() {
+PBytes get_root_hash(DB &db) {
   string root_str("ROOT");
   auto root_hash = db.get((uint8_t*)&root_str[0], root_str.size());
   return move(root_hash);
 }
 
-void save_root_hash(Bytes hash) {
+void save_root_hash(DB &db, Bytes hash) {
   string root_str("ROOT");
   db.put((uint8_t*)&root_str[0], hash.data(), root_str.size(), hash.size(), OVERWRITE);
 }
+
+void join(string join_path) {
+  auto other_db = make_unique<DB>(join_path, false);
+
+  auto root_hash = get_root_hash(*db);
+  auto root = db->load<Root>(*root_hash);
+
+  auto other_root_hash = get_root_hash(*other_db);
+  auto other_root = other_db->load<Root>(*other_root_hash);
+
+  for (auto other_backup_hash : other_root->backups) {
+    bool add(true);
+    for (auto backup_hash : root->backups)
+      if (other_backup_hash == backup_hash)
+        add = false;
+    if (add)
+      root->backups.push_back(other_backup_hash);
+  }
+
+  auto new_root_hash = db->store(*root);
+
+  other_db->iterate_all([](Bytes &key, Bytes &value) {
+    db->put(key, value, NOOVERWRITE);
+  });
+  save_root_hash(*db, *new_root_hash);
+}
+
 
 void backup(GFile *path, string backup_name, string backup_description) {
   Backup backup{backup_name, backup_description};
@@ -424,32 +506,39 @@ void backup(GFile *path, string backup_name, string backup_description) {
     backup.timestamp = std::time(0);
   }
 
-  auto backup_hash = db.store(backup);
+  auto backup_hash = db->store(backup);
 
   Root new_root;
-  auto last_root_hash = get_root_hash();
+  
+  //See if there is already a backup
+  auto last_root_hash = get_root_hash(*db);
   if (last_root_hash) {
-    auto last_root = db.load<Root>(*last_root_hash);
+    auto last_root = db->load<Root>(*last_root_hash);
     new_root.last_root = *last_root_hash;
     new_root.backups = last_root->backups;
   }
+
+  new_root.backups.push_back(*backup_hash);
   new_root.timestamp = std::time(0);
-  auto new_root_hash = db.store(new_root);
-  save_root_hash(*new_root_hash);
+  auto new_root_hash = db->store(new_root);
+  save_root_hash(*db, *new_root_hash);
 }
 
 void list_backups() {
-  auto root_hash = get_root_hash();
-  auto root = db.load<Root>(*root_hash);
+  auto root_hash = get_root_hash(*db);
+  auto root = db->load<Root>(*root_hash);
+  print(timestring(root->timestamp));
+
   for (auto bhash : root->backups) {
-    auto backup = db.load<Backup>(bhash);
+    auto backup = db->load<Backup>(bhash);
     print(backup->name);
   }
 }
 
 int main(int argc, char **argv) {
   init_blakekey();
-  
+  db = make_unique<DB>(DBNAME);
+
   if (argc < 2) {
     cerr << "no command given, use: " << argv[0] << " [command] [options]" << endl;
     cerr << "command = [archive, dryrun, duplicate, filelist, list, output, stats]" << endl;
@@ -470,9 +559,17 @@ int main(int argc, char **argv) {
     GFile *file = g_file_new_for_path(argv[3]);
     backup(file, name, description);
   } else if (command == "stat") {
-    db.print_stat();
+    db->print_stat();
   } else if (command == "list") {
     list_backups();
+  } else if (command == "check") {
+    db->check_all();
+  } else if (command == "join") {
+    if (argc < 3) {
+      cerr << "usage: " << argv[0] << " " << command << " [path of other archive]" << endl;
+      return -1;
+    }
+    join(argv[2]);
   } else {
     print("No such command");
   }  
