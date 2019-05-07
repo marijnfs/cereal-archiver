@@ -8,8 +8,8 @@ typedef std::unique_ptr<Bytes> PBytes;
 inline std::ostream &operator<<(std::ostream &out, Bytes const &b) {
   out << std::hex;
   for (auto abyte : b)
-  	out << b;
-  return out;
+  	out << std::hex << int(abyte);
+  return out << std::dec;
   //return std::cout << b.str();
 }
 

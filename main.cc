@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <queue>
 #include <string>
 
 #include <lmdb.h>
@@ -226,14 +227,17 @@ struct DB {
 
   void check_all() {
     MDB_cursor *cursor;
-    mdb_txn_begin(env, NULL, 0, &txn);
+    mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
 
     MDB_val key, value;
 
     c(mdb_cursor_get(cursor, &key, &value, MDB_FIRST));
 
+    int counter(0);
     while (true) {
+      if (counter++ % 1000 == 0)
+        print(counter);
       Bytes bkey(reinterpret_cast<uint8_t *>(key.mv_data),
                              reinterpret_cast<uint8_t *>(key.mv_data) +
                                             key.mv_size);
@@ -242,15 +246,15 @@ struct DB {
                                             value.mv_size);
       auto hash = get_hash((uint8_t*)value.mv_data, value.mv_size);
       if (*hash != bkey)
-        println("nonmatch for: ", bkey);
+        println("nonmatch for a key of len: ", key.mv_size);
       // println("b: ", bkey);
       // println(bkey, " == ", *hash);
       if (mdb_cursor_get(cursor, &key, &value, MDB_NEXT))
         break;
     }
     
-    mdb_txn_commit(txn);
     mdb_cursor_close(cursor);
+    mdb_txn_abort(txn);
   }
 
   int rc;
@@ -329,7 +333,6 @@ struct Backup {
     ar(name, description, size, hash, timestamp);
   }
 };
-
 
 string timestring(uint64_t timestamp) {
  std::tm * ptm = std::localtime((time_t*)&timestamp);
@@ -537,7 +540,49 @@ void list_backups() {
   }
 }
 
+void list_all_files() {
+  auto root_hash = get_root_hash(*db);
+  auto root = db->load<Root>(*root_hash);
+  print(timestring(root->timestamp));
+
+  for (auto bhash : root->backups) {
+    auto backup = db->load<Backup>(bhash);
+    auto backup_name = backup->name;
+    cout << backup->hash << endl;
+    auto root_entry = db->load<Entry>(backup->hash);
+    print("root entry: ", root_entry->size);
+    auto root_dir = db->load<Dir>(root_entry->hash);
+    cout << "backup " << backup_name << endl;
+    cout << root_dir->entries.size() << endl;
+    queue<unique_ptr<Dir>> q;
+    queue<string> name_q;
+
+    q.push(move(root_dir));
+    name_q.push(backup_name + ":");
+
+    while (!q.empty()) {
+      auto cur_dir = move(q.front());
+      auto cur_name = name_q.front();
+      q.pop();
+      name_q.pop();
+
+      for (auto entry : cur_dir->entries) {
+        if (entry.type != Directory)
+          println(user_readable_size(entry.size), " ", cur_name + "/" + entry.name);
+        else {
+          q.push(move(db->load<Dir>(entry.hash)));
+          name_q.push(cur_name + "/" + entry.name);
+        }
+      }
+        
+    }
+    print(backup->name);
+  }
+}
+
+
 int main(int argc, char **argv) {
+  cout << "Cereal Archiver" << endl;
   init_blakekey();
   db = make_unique<DB>(DBNAME);
 
@@ -564,6 +609,8 @@ int main(int argc, char **argv) {
     db->print_stat();
   } else if (command == "list") {
     list_backups();
+  } else if (command == "listfiles") {
+    list_all_files();
   } else if (command == "check") {
     db->check_all();
   } else if (command == "join") {
