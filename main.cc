@@ -325,12 +325,12 @@ struct Backup {
   string name;
   string description;
   uint64_t size;
-  Bytes hash;
+  Bytes entry_hash;
   uint64_t timestamp;
 
   template <class Archive>
   void serialize( Archive & ar ) {
-    ar(name, description, size, hash, timestamp);
+    ar(name, description, size, entry_hash, timestamp);
   }
 };
 
@@ -344,15 +344,15 @@ string timestring(uint64_t timestamp) {
 
 unique_ptr<DB> db;
 
-tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
+Entry enumerate(GFile *root, GFile *path) {
   GFileEnumerator *enumerator;
   GError *error = NULL;
-  
+
   enumerator = g_file_enumerate_children(
                                          path, "*", G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, &error);
   if (error != NULL) {
     cerr << error->message << endl;
-    return tuple<PBytes, uint64_t>(PBytes(), 0);
+    return Entry{};
   }
 
   Dir dir;
@@ -393,9 +393,9 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
     
     //handle directories by recursively calling enumerate, which returns a hash and total size
     if (file_type == G_FILE_TYPE_DIRECTORY) {
-      auto [hash, n] = enumerate(root, child);
-      dir.entries.push_back(Entry{base_name, *hash, Directory, n, timestamp, true});
-      total_size += n;
+      auto entry = enumerate(root, child);
+      dir.entries.push_back(entry);
+      total_size += entry.size;
     } else { 
       //It's a normal file, depending on size store it as one blob or multipart     
       goffset filesize = g_file_info_get_size(finfo);
@@ -461,7 +461,15 @@ tuple<PBytes, uint64_t> enumerate(GFile *root, GFile *path) {
 
   //now store the dir
   auto hash = db->store(dir);
-  return tuple<PBytes, uint64_t>(move(hash), total_size);
+
+  //get the dir timestamp
+  uint64_t timestamp = 0;
+  char *base_name_c = g_file_get_basename(path);
+  string base_name(base_name_c);
+  g_free(base_name_c);
+
+  Entry dir_entry{base_name, *hash, Directory, total_size, timestamp, true};
+  return dir_entry;
 }
 
 PBytes get_root_hash(DB &db) {
@@ -505,9 +513,10 @@ void join(string join_path) {
 void backup(GFile *path, string backup_name, string backup_description) {
   Backup backup{backup_name, backup_description};
   {
-    auto [hash, n] = enumerate(path, path);
-    backup.hash = *hash;
-    backup.size = n;
+    auto entry = enumerate(path, path);
+    auto entry_hash = db->store(entry);
+    backup.entry_hash = *entry_hash;
+    backup.size = entry.size;
     backup.timestamp = std::time(0);
   }
 
@@ -548,8 +557,8 @@ void list_all_files() {
   for (auto bhash : root->backups) {
     auto backup = db->load<Backup>(bhash);
     auto backup_name = backup->name;
-    cout << backup->hash << endl;
-    auto root_entry = db->load<Entry>(backup->hash);
+
+    auto root_entry = db->load<Entry>(backup->entry_hash);
     print("root entry: ", root_entry->size);
     auto root_dir = db->load<Dir>(root_entry->hash);
     cout << "backup " << backup_name << endl;
@@ -579,6 +588,32 @@ void list_all_files() {
     print(backup->name);
   }
 }
+
+
+    struct Test {
+      bool bla;
+      string one;
+      string two;
+
+      template <class Archive>
+     void save( Archive & ar ) const
+     {
+      if (bla)
+       ar( bla, one );
+     else
+      ar(bla, two);
+     }
+           
+       template <class Archive>
+       void load( Archive & ar )
+       {
+        ar(bla);
+        if (bla)
+          ar(one);
+        else
+          ar(two);
+       }
+    };
 
 
 int main(int argc, char **argv) {
@@ -613,6 +648,12 @@ int main(int argc, char **argv) {
     list_all_files();
   } else if (command == "check") {
     db->check_all();
+  } else if (command == "file") {
+    if (argc < 3) {
+      cerr << "usage: " << argv[0] << " " << command << " [backup:filepath]" << endl;
+      return -1;
+    }
+    
   } else if (command == "join") {
     if (argc < 3) {
       cerr << "usage: " << argv[0] << " " << command << " [path of other archive]" << endl;
