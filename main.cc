@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <sstream>
+#include <fstream>
 #include <iomanip>
 #include <vector>
 #include <queue>
@@ -21,12 +22,28 @@
 
 #include "bytes.h"
 
-using namespace std;
-
 uint HASH_BYTES(32);
 uint64_t MAX_FILESIZE(0);
 uint64_t MULTIPART_SIZE(uint64_t(2) << 30);
 uint8_t blakekey[BLAKE2B_KEYBYTES];
+uint64_t VERSION(1);
+
+enum class BlobType {
+  NONE,
+  ROOT,
+  BACKUP,
+  DIRECTORY,
+  ENTRY,
+  MULTIPART
+};
+
+enum class EntryType {
+    SINGLEFILE,
+    DIRECTORY,
+    MULTIFILE
+};
+
+using namespace std;
 
 void init_blakekey() {
   for (size_t i = 0; i < BLAKE2B_KEYBYTES; ++i)
@@ -271,66 +288,143 @@ struct DB {
   }
 };
 
-enum EntryType {
-    File,
-    Directory,
-    Multi
-};
 
 struct Entry {
+  uint64_t version;
+
   string name;
   Bytes hash;
   EntryType type;
   uint64_t size = 0;
   uint64_t timestamp = 0;
   uint64_t access = 0;
-  bool active = false;
+  bool active = true;
+  string content_type;
 
   template <class Archive>
-  void serialize( Archive & ar ) {
+  void load( Archive & ar ) {
     ar(name, hash, type, size, timestamp, access, active);
+    
+    //new load
+    // int64_t btype(0);
+    // ar(btype);
+    // if (btype != (int64_t)BlobType::ENTRY)
+    //   throw StringException("decerealisation: Not an Entry type");
+    // ar(version, name, hash, type, size, timestamp, access, active, content_type);
+  }  
+
+  template <class Archive>
+  void save( Archive & ar ) const {
+    // ar(name, hash, type, size, timestamp, access, active);
+
+    ar(int64_t(BlobType::ENTRY), version, name, hash, type, size, timestamp, access, active, content_type);
+
   }  
 };
 
 struct MultiPart {
+  uint64_t version;
   vector<Bytes> hashes;
   
   template <class Archive>
-  void serialize( Archive & ar ) {
+  void load( Archive & ar ) {
     ar(hashes);
+
+    //New load
+    // int64_t btype(0);
+    // ar(btype);
+    // if (btype != (int64_t)BlobType::MULTIPART)
+    //   throw StringException("decerealisation: Not an Entry type");
+    // ar(version, hashes);
+  }  
+
+  template <class Archive>
+  void save( Archive & ar ) const {
+    // ar(hashes);
+
+    ar(int64_t(BlobType::MULTIPART), version, hashes);
   }  
 };
 
 struct Dir {
+  uint64_t version;
   vector<Entry> entries;
 
   template <class Archive>
-  void serialize( Archive & ar ) {
+  void load( Archive & ar ) {
     ar(entries);
+
+    //New load
+    // int64_t btype(0);
+    // ar(btype);
+    // if (btype != (int64_t)BlobType::DIRECTORY)
+    //   throw StringException("decerealisation: Not an Entry type");
+    // ar(version, entries);
+  }
+
+  template <class Archive>
+  void save( Archive & ar ) const {
+    // ar(entries);
+
+    ar(int64_t(BlobType::DIRECTORY), version, entries);
   }
 };
 
 struct Root {
+  uint64_t version;
   vector<Bytes> backups;
   Bytes last_root;
   uint64_t timestamp;
 
   template <class Archive>
-  void serialize( Archive & ar ) {
+  void load( Archive & ar ) {
     ar(backups, last_root, timestamp);
+
+    //New load
+    // int64_t btype(0);
+    // ar(btype);
+    // if (btype != (int64_t)BlobType::ROOT)
+    //   throw StringException("decerealisation: Not an Entry type");
+    // ar(version, backups, last_root, timestamp);
+  }
+
+  template <class Archive>
+  void save( Archive & ar ) const {
+    // ar(backups, last_root, timestamp);
+
+    ar(int64_t(BlobType::ROOT), version, backups, last_root, timestamp);
   }
 };
 
 struct Backup {
+  uint64_t version;
   string name;
   string description;
   uint64_t size;
+
+  //temporarily it will have both
   Bytes entry_hash;
+  Entry entry; 
+
   uint64_t timestamp;
 
   template <class Archive>
-  void serialize( Archive & ar ) {
+  void load( Archive & ar ) {
     ar(name, description, size, entry_hash, timestamp);
+
+    //New load
+    // int64_t btype(0);
+    // ar(btype);
+    // if (btype != (int64_t)BlobType::BACKUP)
+    //   throw StringException("decerealisation: Not an Entry type");
+    // ar(version, name, description, size, entry, timestamp);
+  }
+
+  template <class Archive>
+  void save( Archive & ar ) const {
+    // ar(name, description, size, entry_hash, timestamp);
+  
+    ar(int64_t(BlobType::BACKUP), version, name, description, size, entry, timestamp);
   }
 };
 
@@ -418,7 +512,12 @@ Entry enumerate(GFile *root, GFile *path) {
         auto hash = get_hash((uint8_t*)data, len);
 
         db->put(hash->data(), (uint8_t*)data, hash->size(), len, NOOVERWRITE);
-        dir.entries.push_back(Entry{base_name, *hash, File, len, timestamp, true});
+
+        uint64_t access = 0;
+        bool active = true;
+        string content_type;
+
+        dir.entries.push_back(Entry{VERSION, base_name, *hash, EntryType::SINGLEFILE, len, timestamp, access, active, content_type});
         total_size += len;
       } else {
         //Too big for direct storage, Multipart file
@@ -448,7 +547,12 @@ Entry enumerate(GFile *root, GFile *path) {
           db->put(hash->data(), (uint8_t*)&data[0], hash->size(), bytes_read, NOOVERWRITE); //store part in database
         }
         auto hash = db->store(multipart);
-        dir.entries.push_back(Entry{base_name, *hash, Multi, len, timestamp, true});
+        uint64_t access = 0;
+        bool active = true;
+        string content_type;
+
+        dir.entries.push_back(Entry{VERSION, base_name, *hash, EntryType::MULTIFILE, len, timestamp, access, active, content_type});
+
         total_size += len;
       }
     }
@@ -468,7 +572,11 @@ Entry enumerate(GFile *root, GFile *path) {
   string base_name(base_name_c);
   g_free(base_name_c);
 
-  Entry dir_entry{base_name, *hash, Directory, total_size, timestamp, true};
+  uint64_t access = 0;
+  bool active = true;
+  string content_type;
+
+  Entry dir_entry{VERSION, base_name, *hash, EntryType::DIRECTORY, total_size, timestamp, access, active, content_type};
   return dir_entry;
 }
 
@@ -509,9 +617,76 @@ void join(string join_path) {
   save_root_hash(*db, *new_root_hash);
 }
 
+void output_file(string path, string target_path) {
+  //extract the backup part
+  auto backup_sep = path.find(":");
+  if (backup_sep == string::npos) {
+    print("need a backup seperator [backup:path]");
+    return;
+  }
+  auto backup_name = path.substr(0, backup_sep);
+  path = path.substr(backup_sep+1);
+
+  //remove initial slash
+  auto first_slash = path.find("/");
+  if (first_slash == string::npos || first_slash != 0) {
+    print("path after backup should start with / (slash)");
+    return;
+  }
+  path = path.substr(first_slash + 1);
+
+  //loop over backups
+  
+  auto root = db->load<Root>(*get_root_hash(*db));
+  for (auto b : root->backups) {
+    auto backup = db->load<Backup>(b);
+    if (backup->name != backup_name)
+      continue;
+    string search_path = path;
+    auto start_entry = db->load<Entry>(backup->entry_hash);
+    auto dir = db->load<Dir>(start_entry->hash);
+
+    bool go = true;
+    while (go && search_path.size()) {
+      go = false;
+      string current_search = search_path;
+      auto slash = search_path.find("/");
+      if (slash != string::npos)
+        current_search = current_search.substr(0, slash);
+      for (auto entry : dir->entries) {
+        if (current_search == entry.name) {
+          if (entry.type != EntryType::DIRECTORY) {
+            ofstream outfile(target_path);
+            
+            if (entry.type == EntryType::SINGLEFILE) {
+              auto data = db->get(entry.hash);
+              print("found file: ", entry.name);
+              outfile.write((char*)data->data(), data->size());
+
+            } else if (entry.type == EntryType::SINGLEFILE) {
+              auto multi = db->load<MultiPart>(entry.hash);
+              for (auto h : multi->hashes) {
+                auto data = db->get(h);
+                outfile.write((char*)data->data(), data->size());
+              }
+            }
+            throw StringException("Found File");
+          } else {
+            if (entry.name >= search_path)
+              throw StringException("problem with path");
+            go = true;
+            search_path = search_path.substr(current_search.size() + 1);
+            dir = db->load<Dir>(entry.hash);
+          }
+        }
+      }
+    }
+
+  }
+}
 
 void backup(GFile *path, string backup_name, string backup_description) {
-  Backup backup{backup_name, backup_description};
+  Backup backup{VERSION, backup_name, backup_description};
   {
     auto entry = enumerate(path, path);
     auto entry_hash = db->store(entry);
@@ -559,7 +734,6 @@ void list_all_files() {
     auto backup_name = backup->name;
 
     auto root_entry = db->load<Entry>(backup->entry_hash);
-    print("root entry: ", root_entry->size);
     auto root_dir = db->load<Dir>(root_entry->hash);
     cout << "backup " << backup_name << endl;
     cout << root_dir->entries.size() << endl;
@@ -576,7 +750,7 @@ void list_all_files() {
       name_q.pop();
 
       for (auto entry : cur_dir->entries) {
-        if (entry.type != Directory)
+        if (entry.type != EntryType::DIRECTORY)
           println(user_readable_size(entry.size), " ", cur_name + "/" + entry.name);
         else {
           q.push(move(db->load<Dir>(entry.hash)));
@@ -588,33 +762,6 @@ void list_all_files() {
     print(backup->name);
   }
 }
-
-
-    struct Test {
-      bool bla;
-      string one;
-      string two;
-
-      template <class Archive>
-     void save( Archive & ar ) const
-     {
-      if (bla)
-       ar( bla, one );
-     else
-      ar(bla, two);
-     }
-           
-       template <class Archive>
-       void load( Archive & ar )
-       {
-        ar(bla);
-        if (bla)
-          ar(one);
-        else
-          ar(two);
-       }
-    };
-
 
 int main(int argc, char **argv) {
   cout << "Cereal Archiver" << endl;
@@ -644,16 +791,16 @@ int main(int argc, char **argv) {
     db->print_stat();
   } else if (command == "list") {
     list_backups();
-  } else if (command == "listfiles") {
+  } else if (command == "filelist") {
     list_all_files();
   } else if (command == "check") {
     db->check_all();
   } else if (command == "file") {
-    if (argc < 3) {
-      cerr << "usage: " << argv[0] << " " << command << " [backup:filepath]" << endl;
+    if (argc < 4) {
+      cerr << "usage: " << argv[0] << " " << command << " [backup:filepath] [target path]" << endl;
       return -1;
     }
-    
+    output_file(argv[2], argv[3]);
   } else if (command == "join") {
     if (argc < 3) {
       cerr << "usage: " << argv[0] << " " << command << " [path of other archive]" << endl;
