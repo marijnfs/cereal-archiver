@@ -123,6 +123,9 @@ struct DB {
 
   //classic byte pointer put function
   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+    if (read_only)
+      throw StringException("Not allowed to store, Read Only!");
+
     std::cerr << key_len << " " << data_len << std::endl;
     MDB_val mkey{key_len, key}, mdata{data_len, data};
 
@@ -189,6 +192,8 @@ struct DB {
 
   template <typename T>
   PBytes store(T &value) {
+    if (read_only)
+      throw StringException("Not allowed to store, Read Only!");
     ostringstream oss;
     {
       cereal::PortableBinaryOutputArchive ar(oss);
@@ -278,6 +283,7 @@ struct DB {
   MDB_env *env = 0;
   MDB_dbi dbi;
   MDB_txn *txn = 0;
+  bool read_only = false;
 
   //check function
   void c(int rc) {
@@ -290,7 +296,7 @@ struct DB {
 
 
 struct Entry {
-  uint64_t version;
+  uint64_t version = VERSION;
 
   string name;
   Bytes hash;
@@ -323,7 +329,7 @@ struct Entry {
 };
 
 struct MultiPart {
-  uint64_t version;
+  uint64_t version = VERSION;
   vector<Bytes> hashes;
   
   template <class Archive>
@@ -347,7 +353,7 @@ struct MultiPart {
 };
 
 struct Dir {
-  uint64_t version;
+  uint64_t version = VERSION;
   vector<Entry> entries;
 
   template <class Archive>
@@ -371,7 +377,7 @@ struct Dir {
 };
 
 struct Root {
-  uint64_t version;
+  uint64_t version = VERSION;
   vector<Bytes> backups;
   Bytes last_root;
   uint64_t timestamp;
@@ -397,7 +403,7 @@ struct Root {
 };
 
 struct Backup {
-  uint64_t version;
+  uint64_t version = VERSION;
   string name;
   string description;
   uint64_t size;
@@ -763,6 +769,65 @@ void list_all_files() {
   }
 }
 
+unique_ptr<Entry> convert_entry(DB &target_db, Entry &entry) {
+  auto new_entry = make_unique<Entry>(entry);
+
+  if (entry.type != EntryType::DIRECTORY) {
+    auto dir = db->load<Dir>(entry.hash);
+    auto new_dir = make_unique<Dir>();
+    for (auto dir_entry : dir->entries) {
+      auto conv_entry = convert_entry(target_db, dir_entry);
+      new_dir->entries.push_back(*conv_entry);
+    }
+    auto dir_hash = target_db.store(*new_dir);
+    new_entry->hash = *dir_hash;
+  }
+  if (entry.type != EntryType::SINGLEFILE) {
+    auto data = db->get(entry.hash);
+    target_db.put(entry.hash, *data, NOOVERWRITE);    
+  }
+  if (entry.type != EntryType::MULTIFILE) {
+    auto multi = db->load<MultiPart>(entry.hash);
+    for (auto h : multi->hashes) {
+      auto data = db->get(h);
+      target_db.put(h, *data, NOOVERWRITE);   
+    }
+    auto multi_hash = target_db.store(*multi);
+    new_entry->hash = *multi_hash;
+  }
+  return new_entry;
+}
+
+void move_to(string target_db_path) {
+  db->read_only = true;
+  auto target_db = make_unique<DB>(target_db_path);
+
+  auto root_hash = get_root_hash(*db);
+  auto root = db->load<Root>(*root_hash);
+
+  Root new_root;
+  new_root.version = 1;
+  new_root.timestamp = root->timestamp;
+  new_root.last_root = *root_hash;
+
+
+  for (auto bhash : root->backups) {
+    auto backup = db->load<Backup>(bhash);
+
+    //conversion of old setup
+    auto backup_entry = db->load<Entry>(backup->entry_hash);
+
+    backup_entry = convert_entry(*target_db, *backup_entry);
+    backup->entry = *backup_entry;
+    auto backup_hash = target_db->store(*backup);
+    new_root.backups.push_back(*backup_hash);
+  }
+  
+  auto new_root_hash = target_db->store(new_root);
+  save_root_hash(*target_db, *new_root_hash);
+}
+
+
 int main(int argc, char **argv) {
   cout << "Cereal Archiver" << endl;
   init_blakekey();
@@ -795,6 +860,12 @@ int main(int argc, char **argv) {
     list_all_files();
   } else if (command == "check") {
     db->check_all();
+  } else if (command == "moveto") {
+    if (argc < 3) {
+      cerr << "usage: " << argv[0] << " " << command << " [path of other archive]" << endl;
+      return -1;
+    }
+    move_to(argv[2]);
   } else if (command == "file") {
     if (argc < 4) {
       cerr << "usage: " << argv[0] << " " << command << " [backup:filepath] [target path]" << endl;
