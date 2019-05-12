@@ -27,6 +27,7 @@ uint64_t MAX_FILESIZE(0);
 uint64_t MULTIPART_SIZE(uint64_t(2) << 30);
 uint8_t blakekey[BLAKE2B_KEYBYTES];
 uint64_t VERSION(1);
+bool old_load(false);
 
 enum class BlobType {
   NONE,
@@ -309,22 +310,25 @@ struct Entry {
 
   template <class Archive>
   void load( Archive & ar ) {
-    ar(name, hash, type, size, timestamp, access, active);
-    
-    //new load
-    // int64_t btype(0);
-    // ar(btype);
-    // if (btype != (int64_t)BlobType::ENTRY)
-    //   throw StringException("decerealisation: Not an Entry type");
-    // ar(version, name, hash, type, size, timestamp, access, active, content_type);
+    if (old_load)
+      ar(name, hash, type, size, timestamp, access, active);
+    else {
+      //new load
+      int64_t btype(0);
+      ar(btype);
+      if (btype != (int64_t)BlobType::ENTRY)
+        throw StringException("decerealisation: Not an Entry type");
+      int64_t type64(0);
+      ar(version, name, hash, type64, size, timestamp, access, active, content_type);
+      type = EntryType(type64);
+    }
   }  
 
   template <class Archive>
   void save( Archive & ar ) const {
-    // ar(name, hash, type, size, timestamp, access, active);
-
-    ar(int64_t(BlobType::ENTRY), version, name, hash, type, size, timestamp, access, active, content_type);
-
+      // ar(name, hash, type, size, timestamp, access, active);
+    
+    ar(int64_t(BlobType::ENTRY), version, name, hash, int64_t(type), size, timestamp, access, active, content_type);
   }  
 };
 
@@ -334,14 +338,16 @@ struct MultiPart {
   
   template <class Archive>
   void load( Archive & ar ) {
-    ar(hashes);
-
-    //New load
-    // int64_t btype(0);
-    // ar(btype);
-    // if (btype != (int64_t)BlobType::MULTIPART)
-    //   throw StringException("decerealisation: Not an Entry type");
-    // ar(version, hashes);
+    if (old_load)
+      ar(hashes);
+    else {
+      //New load
+      int64_t btype(0);
+      ar(btype);
+      if (btype != (int64_t)BlobType::MULTIPART)
+        throw StringException("decerealisation: Not a MultiPart type");
+      ar(version, hashes);
+    }
   }  
 
   template <class Archive>
@@ -358,14 +364,16 @@ struct Dir {
 
   template <class Archive>
   void load( Archive & ar ) {
-    ar(entries);
-
-    //New load
-    // int64_t btype(0);
-    // ar(btype);
-    // if (btype != (int64_t)BlobType::DIRECTORY)
-    //   throw StringException("decerealisation: Not an Entry type");
-    // ar(version, entries);
+    if (old_load)
+      ar(entries);
+    else {
+      //New load
+      int64_t btype(0);
+      ar(btype);
+      if (btype != (int64_t)BlobType::DIRECTORY)
+        throw StringException("decerealisation: Not an Dir type");
+      ar(version, entries);
+    }
   }
 
   template <class Archive>
@@ -384,14 +392,16 @@ struct Root {
 
   template <class Archive>
   void load( Archive & ar ) {
-    ar(backups, last_root, timestamp);
-
-    //New load
-    // int64_t btype(0);
-    // ar(btype);
-    // if (btype != (int64_t)BlobType::ROOT)
-    //   throw StringException("decerealisation: Not an Entry type");
-    // ar(version, backups, last_root, timestamp);
+    if (old_load)
+      ar(backups, last_root, timestamp);
+    else {
+      //New load
+      int64_t btype(0);
+      ar(btype);
+      if (btype != (int64_t)BlobType::ROOT)
+        throw StringException("decerealisation: Not an Root type");
+      ar(version, backups, last_root, timestamp);
+    }
   }
 
   template <class Archive>
@@ -416,14 +426,16 @@ struct Backup {
 
   template <class Archive>
   void load( Archive & ar ) {
-    ar(name, description, size, entry_hash, timestamp);
-
-    //New load
-    // int64_t btype(0);
-    // ar(btype);
-    // if (btype != (int64_t)BlobType::BACKUP)
-    //   throw StringException("decerealisation: Not an Entry type");
-    // ar(version, name, description, size, entry, timestamp);
+    if (old_load)
+      ar(name, description, size, entry_hash, timestamp);
+    else {
+      //New load
+      int64_t btype(0);
+      ar(btype);
+      if (btype != (int64_t)BlobType::BACKUP)
+        throw StringException("decerealisation: Not an Backup type");
+      ar(version, name, description, size, entry, timestamp);
+    }
   }
 
   template <class Archive>
@@ -649,8 +661,14 @@ void output_file(string path, string target_path) {
     if (backup->name != backup_name)
       continue;
     string search_path = path;
-    auto start_entry = db->load<Entry>(backup->entry_hash);
-    auto dir = db->load<Dir>(start_entry->hash);
+
+    unique_ptr<Dir> dir;
+    if (old_load) {
+      auto start_entry = db->load<Entry>(backup->entry_hash);
+      dir = db->load<Dir>(start_entry->hash);
+    } else {
+      dir = db->load<Dir>(backup->entry.hash);
+    }
 
     bool go = true;
     while (go && search_path.size()) {
@@ -739,8 +757,18 @@ void list_all_files() {
     auto backup = db->load<Backup>(bhash);
     auto backup_name = backup->name;
 
-    auto root_entry = db->load<Entry>(backup->entry_hash);
-    auto root_dir = db->load<Dir>(root_entry->hash);
+    unique_ptr<Dir> root_dir;
+
+    if (old_load) {
+      ///Old loading
+      auto root_entry = db->load<Entry>(backup->entry_hash);
+      root_dir = db->load<Dir>(root_entry->hash);
+    } else {
+      //New loading
+      auto root_entry = backup->entry;
+      root_dir = db->load<Dir>(root_entry.hash);
+    }
+
     cout << "backup " << backup_name << endl;
     cout << root_dir->entries.size() << endl;
     queue<unique_ptr<Dir>> q;
@@ -770,9 +798,10 @@ void list_all_files() {
 }
 
 unique_ptr<Entry> convert_entry(DB &target_db, Entry &entry) {
+  print("convert ", entry.name);
   auto new_entry = make_unique<Entry>(entry);
 
-  if (entry.type != EntryType::DIRECTORY) {
+  if (entry.type == EntryType::DIRECTORY) {
     auto dir = db->load<Dir>(entry.hash);
     auto new_dir = make_unique<Dir>();
     for (auto dir_entry : dir->entries) {
@@ -782,11 +811,11 @@ unique_ptr<Entry> convert_entry(DB &target_db, Entry &entry) {
     auto dir_hash = target_db.store(*new_dir);
     new_entry->hash = *dir_hash;
   }
-  if (entry.type != EntryType::SINGLEFILE) {
+  if (entry.type == EntryType::SINGLEFILE) {
     auto data = db->get(entry.hash);
     target_db.put(entry.hash, *data, NOOVERWRITE);    
   }
-  if (entry.type != EntryType::MULTIFILE) {
+  if (entry.type == EntryType::MULTIFILE) {
     auto multi = db->load<MultiPart>(entry.hash);
     for (auto h : multi->hashes) {
       auto data = db->get(h);
@@ -879,6 +908,6 @@ int main(int argc, char **argv) {
     }
     join(argv[2]);
   } else {
-    print("No such command");
+    print("No such command: ", command);
   }  
 }
