@@ -27,7 +27,7 @@ uint64_t MAX_FILESIZE(0);
 uint64_t MULTIPART_SIZE(uint64_t(2) << 30);
 uint8_t blakekey[BLAKE2B_KEYBYTES];
 uint64_t VERSION(1);
-bool old_load(false);
+bool old_load(true);
 
 enum class BlobType {
   NONE,
@@ -98,7 +98,8 @@ struct DB {
   DB(string db_path, bool read_only = false) {
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
-    c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
+    //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
+    c(mdb_env_set_mapsize(env, size_t(840) << 30)); // One TB
     //c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
     c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     
@@ -147,10 +148,13 @@ struct DB {
     MDB_val mdata;
     c(mdb_txn_begin(env, NULL, 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
+
     if (result == MDB_NOTFOUND) {
       c(mdb_txn_commit(txn));
       return nullptr;
     }
+    c(result);
+
     auto ret_val = make_unique<Bytes>(reinterpret_cast<uint8_t *>(mdata.mv_data),
                              reinterpret_cast<uint8_t *>(mdata.mv_data) +
                                             mdata.mv_size);
@@ -800,7 +804,11 @@ void list_all_files() {
 unique_ptr<Entry> convert_entry(DB &target_db, Entry &entry) {
   print("convert ", entry.name);
   auto new_entry = make_unique<Entry>(entry);
-
+  if (entry.hash.empty()) {
+    print("hash empty");
+    new_entry->active = false;
+    return new_entry;
+  }
   if (entry.type == EntryType::DIRECTORY) {
     auto dir = db->load<Dir>(entry.hash);
     auto new_dir = make_unique<Dir>();
