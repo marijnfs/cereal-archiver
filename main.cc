@@ -14,6 +14,9 @@
 #include <cereal/types/unordered_map.hpp>
 #include <cereal/types/vector.hpp>
 #include <cereal/types/memory.hpp>
+
+#include <asio.hpp>
+
 #include "blake2.h"
 
 #include <glib-2.0/gio/gio.h>
@@ -27,7 +30,7 @@ uint64_t MAX_FILESIZE(0);
 uint64_t MULTIPART_SIZE(uint64_t(2) << 30);
 uint8_t blakekey[BLAKE2B_KEYBYTES];
 uint64_t VERSION(1);
-bool old_load(true);
+bool old_load(false);
 
 enum class BlobType {
   NONE,
@@ -95,7 +98,7 @@ enum Overwrite {
 };
 
 struct DB {
-  DB(string db_path, bool read_only = false) {
+  DB(string db_path, bool read_only_ = false) {
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
@@ -110,6 +113,7 @@ struct DB {
     // c( mdb_put(txn, *dbi, &mkey, &mdata, 0) );
     c(mdb_txn_commit(txn));
     // cout << "done" << endl;
+    read_only = read_only_;
   }
 
   ~DB() { 
@@ -402,8 +406,9 @@ struct Root {
       //New load
       int64_t btype(0);
       ar(btype);
-      if (btype != (int64_t)BlobType::ROOT)
+      if (btype != (int64_t)BlobType::ROOT) {
         throw StringException("decerealisation: Not an Root type");
+      }
       ar(version, backups, last_root, timestamp);
     }
   }
@@ -614,7 +619,7 @@ void save_root_hash(DB &db, Bytes hash) {
 }
 
 void join(string join_path) {
-  auto other_db = make_unique<DB>(join_path, false);
+  auto other_db = make_unique<DB>(join_path, true);
 
   auto root_hash = get_root_hash(*db);
   auto root = db->load<Root>(*root_hash);
@@ -636,6 +641,7 @@ void join(string join_path) {
   other_db->iterate_all([](Bytes &key, Bytes &value) {
     db->put(key, value, NOOVERWRITE);
   });
+
   save_root_hash(*db, *new_root_hash);
 }
 
@@ -691,8 +697,10 @@ void output_file(string path, string target_path) {
               print("found file: ", entry.name);
               outfile.write((char*)data->data(), data->size());
 
-            } else if (entry.type == EntryType::SINGLEFILE) {
+            } else if (entry.type == EntryType::MULTIFILE) {
+              print("found multi file: ", entry.name);
               auto multi = db->load<MultiPart>(entry.hash);
+              print("multi hash: ", multi->hashes.size());
               for (auto h : multi->hashes) {
                 auto data = db->get(h);
                 outfile.write((char*)data->data(), data->size());
@@ -717,8 +725,9 @@ void backup(GFile *path, string backup_name, string backup_description) {
   Backup backup{VERSION, backup_name, backup_description};
   {
     auto entry = enumerate(path, path);
-    auto entry_hash = db->store(entry);
-    backup.entry_hash = *entry_hash;
+    // auto entry_hash = db->store(entry);
+    // backup.entry_hash = *entry_hash;
+    backup.entry = entry;
     backup.size = entry.size;
     backup.timestamp = std::time(0);
   }
@@ -748,8 +757,38 @@ void list_backups() {
 
   for (auto bhash : root->backups) {
     auto backup = db->load<Backup>(bhash);
-    print(backup->name);
+    print(backup->name, " ", backup->entry.hash);
   }
+}
+
+void fix() {
+  throw StringException("Dangerous!");
+  auto root_hash = get_root_hash(*db);
+  print("root hash ", *root_hash);
+  auto root = db->load<Root>(*root_hash);
+
+  vector<Bytes> new_backups;
+  for (int b(0); b < root->backups.size(); ++b) {
+    auto backup_hash = root->backups[b];
+    auto backup = db->load<Backup>(backup_hash);
+    print(backup->name, " ", backup->entry_hash, " ", backup->entry.hash);
+
+    if (backup->entry.hash.empty())
+      continue;
+    new_backups.push_back(backup_hash);
+    // if (backup->entry_hash.size()) {
+    //   print("fixing ", backup->name);
+    //   auto entry = db->load<Entry>(backup->entry_hash);
+    //   backup->entry_hash.clear();
+    //   backup->entry = *entry;
+    //   auto new_bhash = db->store(*backup);
+    //   root->backups[b] = *new_bhash;
+    // }
+  }
+  root->backups = new_backups;
+
+  auto new_root_hash = db->store(*root);
+  save_root_hash(*db, *new_root_hash);
 }
 
 void list_all_files() {
@@ -770,6 +809,8 @@ void list_all_files() {
     } else {
       //New loading
       auto root_entry = backup->entry;
+      print(root_entry.hash);
+      print(backup->entry_hash);
       root_dir = db->load<Dir>(root_entry.hash);
     }
 
@@ -836,6 +877,8 @@ unique_ptr<Entry> convert_entry(DB &target_db, Entry &entry) {
 }
 
 void move_to(string target_db_path) {
+  if (!old_load)
+    throw StringException("moveto is meant for old load");
   db->read_only = true;
   auto target_db = make_unique<DB>(target_db_path);
 
@@ -915,6 +958,8 @@ int main(int argc, char **argv) {
       return -1;
     }
     join(argv[2]);
+  } else if (command == "fix") {
+    fix();
   } else {
     print("No such command: ", command);
   }  
