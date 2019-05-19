@@ -332,7 +332,7 @@ struct Entry {
       ar(version, name, hash, type64, size, timestamp, access, active, content_type);
       type = EntryType(type64);
     }
-  }  
+  }
 
   template <class Archive>
   void save( Archive & ar ) const {
@@ -940,10 +940,17 @@ void serve(string port) {
       istringstream iss(req_string);
       iss >> search_hash;
       auto data = db->get(search_hash);
+      print("serving n bytes: ", data->size(), " ", content_type);
       output_buf.write((char*)data->data(), data->size());
     }
     if (req_type == "rawmulti") {
       content_type = "text/plain";
+      slash_pos = req_string.find('/');
+      if (slash_pos != string::npos) {
+        content_type = req_string.substr(slash_pos+1);
+        req_string = req_string.substr(0, slash_pos);
+      }
+
       Bytes search_hash;
       istringstream iss(req_string);
       iss >> search_hash;
@@ -1002,16 +1009,17 @@ void serve(string port) {
             Dir dir;
             ar(dir);
             output_buf << "<html><head><title></title></head><body><ul>" << endl;
+            sort(dir.entries.begin(), dir.entries.end(), [](Entry const&l, Entry const &r) {return l.size > r.size;});
             for (auto e : dir.entries) {
               string entry_content_type = e.content_type;
               if (entry_content_type.empty())
                 entry_content_type = http::server::mime_types::extension_to_type(e.name);
               if (e.type == EntryType::DIRECTORY)
-                output_buf << "<li>D <a href=\"/" << e.hash << "\">" << e.name << "</a></li>" << endl;
+                output_buf << "<li>D <a href=\"/" << e.hash << "\">" << e.name << "</a> " << user_readable_size(e.size) << "</li>" << endl;
               if (e.type == EntryType::SINGLEFILE)
-                output_buf << "<li><a href=\"/raw/" << e.hash << "/" << entry_content_type << "\">" << e.name << "</a></li>" << endl;
+                output_buf << "<li><a href=\"/raw/" << e.hash << "/" << entry_content_type << "\">" << e.name << "</a> " << user_readable_size(e.size) << "</li>" << endl;
               if (e.type == EntryType::MULTIFILE)
-                output_buf << "<li><a href=\"/rawmulti/" << e.hash << "/" << entry_content_type << "\">" << e.name << "</a></li>" << endl;
+                output_buf << "<li><a href=\"/rawmulti/" << e.hash << "/" << entry_content_type << "\">" << e.name << "</a> " << user_readable_size(e.size) << "</li>" << endl;
             }
             output_buf << "</ul></body></html>";
           }
@@ -1024,7 +1032,7 @@ void serve(string port) {
             output_buf << "<html><head><title></title></head><body><ol>" << endl;
             for (auto bhash : root.backups) {
               auto backup = db->load<Backup>(bhash);
-              output_buf << "<li><a href=\"/" << backup->entry.hash << "\">" << backup->name << "</a></li>" << endl;
+              output_buf << "<li><a href=\"/" << backup->entry.hash << "\">" << backup->name << "</a> " << user_readable_size(backup->size) << "</li>" << endl;
             }
             output_buf << "</ol></body></html>";
           }
