@@ -21,50 +21,48 @@
 namespace http {
 namespace server {
 
-request_handler::request_handler()
-{
-}
 
 void request_handler::handle_request(const request& req, reply& rep)
 {
-  // Decode url to path.
-  std::string request_path;
-  if (!url_decode(req.uri, request_path))
-  {
-    rep = reply::stock_reply(reply::bad_request);
-    return;
-  }
+  callback(req, rep);
+  // // Decode url to path.
+  // std::string request_path;
+  // if (!url_decode(req.uri, request_path))
+  // {
+  //   rep = reply::stock_reply(reply::bad_request);
+  //   return;
+  // }
 
-  // Request path must be absolute and not contain "..".
-  if (request_path.empty() || request_path[0] != '/'
-      || request_path.find("..") != std::string::npos)
-  {
-    rep = reply::stock_reply(reply::bad_request);
-    return;
-  }
+  // // Request path must be absolute and not contain "..".
+  // if (request_path.empty() || request_path[0] != '/'
+  //     || request_path.find("..") != std::string::npos)
+  // {
+  //   rep = reply::stock_reply(reply::bad_request);
+  //   return;
+  // }
 
-  // If path ends in slash (i.e. is a directory) then add "index.html".
-  if (request_path[request_path.size() - 1] == '/')
-  {
-    request_path += "index.html";
-  }
+  // // If path ends in slash (i.e. is a directory) then add "index.html".
+  // if (request_path[request_path.size() - 1] == '/')
+  // {
+  //   request_path += "index.html";
+  // }
 
-  // Determine the file extension.
-  std::size_t last_slash_pos = request_path.find_last_of("/");
-  std::size_t last_dot_pos = request_path.find_last_of(".");
-  std::string extension;
-  if (last_dot_pos != std::string::npos && last_dot_pos > last_slash_pos)
-  {
-    extension = request_path.substr(last_dot_pos + 1);
-  }
+  // // Determine the file extension.
+  // std::size_t last_slash_pos = request_path.find_last_of("/");
+  // std::size_t last_dot_pos = request_path.find_last_of(".");
+  // std::string extension;
+  // if (last_dot_pos != std::string::npos && last_dot_pos > last_slash_pos)
+  // {
+  //   extension = request_path.substr(last_dot_pos + 1);
+  // }
 
-  std::cout << "request: " << request_path << std::endl;
+  // std::cout << "request: " << request_path << std::endl;
   
-  rep.headers.resize(2);
-  rep.headers[0].name = "Content-Length";
-  rep.headers[0].value = std::to_string(rep.content.size());
-  rep.headers[1].name = "Content-Type";
-  rep.headers[1].value = mime_types::extension_to_type(extension);
+  // rep.headers.resize(2);
+  // rep.headers[0].name = "Content-Length";
+  // rep.headers[0].value = std::to_string(rep.content.size());
+  // rep.headers[1].name = "Content-Type";
+  // rep.headers[1].value = mime_types::extension_to_type(extension);
 
 
   // // Open the file to send back.

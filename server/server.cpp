@@ -17,11 +17,12 @@
 namespace http {
 namespace server {
 
-server::server(const std::string& portstr)
+server::server(const std::string& portstr, request_handler_func callback)
   : io_context_(1),
     signals_(io_context_),
     acceptor_(io_context_),
-    connection_manager_()
+    connection_manager_(),
+    request_handler_(callback)
 {
   // Register to handle the signals that indicate when the server should exit.
   // It is safe to register for the same signal multiple times in a program,

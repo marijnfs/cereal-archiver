@@ -24,6 +24,8 @@
 
 #include "bytes.h"
 #include "server/server.hpp"
+#include "server/mime_types.hpp"
+
 
 uint HASH_BYTES(32);
 uint64_t MAX_FILESIZE(0);
@@ -496,6 +498,7 @@ Entry enumerate(GFile *root, GFile *path) {
     relative_path = g_file_get_relative_path(root, child);
     auto file_type = g_file_info_get_file_type(finfo);
     auto full_path = g_file_get_path(child);
+    char const *content_type = g_file_info_get_content_type(finfo);
     GTimeVal gtime;
     g_file_info_get_modification_time (finfo, &gtime);
     uint64_t timestamp = gtime.tv_sec;
@@ -542,7 +545,6 @@ Entry enumerate(GFile *root, GFile *path) {
 
         uint64_t access = 0;
         bool active = true;
-        string content_type;
 
         dir.entries.push_back(Entry{VERSION, base_name, *hash, EntryType::SINGLEFILE, len, timestamp, access, active, content_type});
         total_size += len;
@@ -576,7 +578,6 @@ Entry enumerate(GFile *root, GFile *path) {
         auto hash = db->store(multipart);
         uint64_t access = 0;
         bool active = true;
-        string content_type;
 
         dir.entries.push_back(Entry{VERSION, base_name, *hash, EntryType::MULTIFILE, len, timestamp, access, active, content_type});
 
@@ -908,8 +909,133 @@ void move_to(string target_db_path) {
 }
 
 void serve(string port) {
-  http::server::server server(port);
+  auto callback = [](const http::server::request& req, http::server::reply& rep) {
+    ostringstream output_buf;
+    string content_type = "text/html";
+
+    print("req uri: ", req.uri);
+    auto slash_pos = req.uri.find('/');
+    if (slash_pos < 0)
+      return;
+    string req_type;
+    string req_string = req.uri.substr(1);
+
+    slash_pos = req_string.find('/');
+    if (slash_pos != string::npos) {
+      req_type = req_string.substr(0, slash_pos);
+      req_string = req_string.substr(slash_pos + 1);
+    }
+    print(req_type, " ", req_string);
+    //these req types output the file
+    if (req_type == "raw") {
+      content_type = "text/plain";
+      Bytes search_hash;
+      istringstream iss(req_string);
+      iss >> search_hash;
+      auto data = db->get(search_hash);
+      output_buf.write((char*)data->data(), data->size());
+    }
+    if (req_type == "rawmulti") {
+      content_type = "text/plain";
+      Bytes search_hash;
+      istringstream iss(req_string);
+      iss >> search_hash;
+      auto multipart = db->load<MultiPart>(search_hash);
+      for (auto hash : multipart->hashes) {
+        auto data = db->get(hash);
+        output_buf.write((char*)data->data(), data->size());
+      }
+    }
+
+    //no req type means see if its a root or dir and output accordingly
+    if (req_type == "") {
+      Bytes search_hash;
+      if (req_string.size() == 0) {
+        auto proot = get_root_hash(*db);
+        print(proot.get());
+
+        search_hash = *proot;
+      } else {
+        istringstream iss(req_string);
+        iss >> search_hash;
+      }
+
+      auto value = db->get(search_hash);
+      if (!value) {
+        rep.status = http::server::reply::not_found;
+        output_buf << "No such hash: " << search_hash;
+
+        rep.content = output_buf.str();
+        rep.headers.resize(2);
+        rep.headers[0].name = "Content-Length";
+        rep.headers[0].value = std::to_string(rep.content.size());
+        rep.headers[1].name = "Content-Type";
+        rep.headers[1].value = "text/plain";
+        return;
+      }
+
+      print("setting up buffer");
+
+      string buf(value->begin(), value->end());
+      istringstream iss(buf);
+
+      //read type, and set read pointer back to 0
+      uint64_t type(0);
+      {
+        cereal::PortableBinaryInputArchive ar(iss);
+        ar(type);
+        iss.seekg(0);
+      }
+      cereal::PortableBinaryInputArchive ar(iss);
+
+      switch (type) {
+        case (int64_t)BlobType::DIRECTORY:
+          print("its a dir");
+          {
+            Dir dir;
+            ar(dir);
+            output_buf << "<html><head><title></title></head><body><ul>" << endl;
+            for (auto e : dir.entries) {
+              if (e.type == EntryType::DIRECTORY)
+                output_buf << "<li>D <a href=\"/" << e.hash << "\">" << e.name << "</a></li>" << endl;
+              if (e.type == EntryType::SINGLEFILE)
+                output_buf << "<li><a href=\"/raw/" << e.hash << "\">" << e.name << "</a></li>" << endl;
+              if (e.type == EntryType::MULTIFILE)
+                output_buf << "<li><a href=\"/rawmulti/" << e.hash << "\">" << e.name << "</a></li>" << endl;
+            }
+            output_buf << "</ul></body></html>";
+          }
+          break;
+        case (int64_t)BlobType::ROOT:
+          print("its a root");
+          {
+            Root root;
+            ar(root);
+            output_buf << "<html><head><title></title></head><body><ol>" << endl;
+            for (auto bhash : root.backups) {
+              auto backup = db->load<Backup>(bhash);
+              output_buf << "<li><a href=\"/" << backup->entry.hash << "\">" << backup->name << "</a></li>" << endl;
+            }
+            output_buf << "</ol></body></html>";
+          }
+          break;
+        default:
+          print("Unknown Type");
+      }
+    }
+
+    rep.content = output_buf.str();
+
+    rep.headers.resize(2);
+    rep.headers[0].name = "Content-Length";
+    rep.headers[0].value = std::to_string(rep.content.size());
+    rep.headers[1].name = "Content-Type";
+    rep.headers[1].value = content_type;
+  };
+
+  http::server::server server(port, callback);
   server.run();
+
 
 }
 

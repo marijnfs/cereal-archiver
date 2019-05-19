@@ -15,5 +15,4 @@ link_directories (${GIO_LIBRARY_DIRS} ${GLIB_LIBRARY_DIRS})
 add_definitions (${GIO_CFLAGS_OTHER} ${GLIB_CFLAGS_OTHER})
 
 add_executable (main ${sources} main.cc)
-message(${GIO_LIBRARIES} ${LMDB_LIBRARIES})
 target_link_libraries (main ${GLIB_LIBRARIES} ${GIO_LIBRARIES} ${LMDB_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
