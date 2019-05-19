@@ -15,7 +15,6 @@
 #include <cereal/types/vector.hpp>
 #include <cereal/types/memory.hpp>
 
-#include <asio.hpp>
 
 #include "blake2.h"
 
@@ -24,6 +23,7 @@
 
 
 #include "bytes.h"
+#include "server/server.hpp"
 
 uint HASH_BYTES(32);
 uint64_t MAX_FILESIZE(0);
@@ -709,7 +709,7 @@ void output_file(string path, string target_path) {
             throw StringException("Found File");
           } else {
             if (entry.name >= search_path)
-              throw StringException("problem with path");
+              throw StringException("Problem with path");
             go = true;
             search_path = search_path.substr(current_search.size() + 1);
             dir = db->load<Dir>(entry.hash);
@@ -907,6 +907,11 @@ void move_to(string target_db_path) {
   save_root_hash(*target_db, *new_root_hash);
 }
 
+void serve(string port) {
+  http::server::server server(port);
+  server.run();
+
+}
 
 int main(int argc, char **argv) {
   cout << "Cereal Archiver" << endl;
@@ -958,6 +963,12 @@ int main(int argc, char **argv) {
       return -1;
     }
     join(argv[2]);
+  } else if (command == "serve") {
+    if (argc < 3) {
+      cerr << "usage: " << argv[0] << " " << command << " [port]" << endl;
+      return -1;
+    }
+    serve(argv[2]);
   } else if (command == "fix") {
     fix();
   } else {
