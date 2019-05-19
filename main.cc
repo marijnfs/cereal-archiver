@@ -920,15 +920,22 @@ void serve(string port) {
     string req_type;
     string req_string = req.uri.substr(1);
 
+    //See if there is a second slash
     slash_pos = req_string.find('/');
     if (slash_pos != string::npos) {
       req_type = req_string.substr(0, slash_pos);
       req_string = req_string.substr(slash_pos + 1);
     }
-    print(req_type, " ", req_string);
+  
     //these req types output the file
     if (req_type == "raw") {
       content_type = "text/plain";
+      //Any slashes we find now encode the content-type, after the data hash
+      slash_pos = req_string.find('/');
+      if (slash_pos != string::npos) {
+        content_type = req_string.substr(slash_pos+1);
+        req_string = req_string.substr(0, slash_pos);
+      }
       Bytes search_hash;
       istringstream iss(req_string);
       iss >> search_hash;
@@ -996,12 +1003,15 @@ void serve(string port) {
             ar(dir);
             output_buf << "<html><head><title></title></head><body><ul>" << endl;
             for (auto e : dir.entries) {
+              string entry_content_type = e.content_type;
+              if (entry_content_type.empty())
+                entry_content_type = http::server::mime_types::extension_to_type(e.name);
               if (e.type == EntryType::DIRECTORY)
                 output_buf << "<li>D <a href=\"/" << e.hash << "\">" << e.name << "</a></li>" << endl;
               if (e.type == EntryType::SINGLEFILE)
-                output_buf << "<li><a href=\"/raw/" << e.hash << "\">" << e.name << "</a></li>" << endl;
+                output_buf << "<li><a href=\"/raw/" << e.hash << "/" << entry_content_type << "\">" << e.name << "</a></li>" << endl;
               if (e.type == EntryType::MULTIFILE)
-                output_buf << "<li><a href=\"/rawmulti/" << e.hash << "\">" << e.name << "</a></li>" << endl;
+                output_buf << "<li><a href=\"/rawmulti/" << e.hash << "/" << entry_content_type << "\">" << e.name << "</a></li>" << endl;
             }
             output_buf << "</ul></body></html>";
           }
