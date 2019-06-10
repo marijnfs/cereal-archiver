@@ -546,6 +546,7 @@ Entry enumerate(GFile *root, GFile *path) {
         uint64_t access = 0;
         bool active = true;
 
+        g_free(data);
         dir.entries.push_back(Entry{VERSION, base_name, *hash, EntryType::SINGLEFILE, len, timestamp, access, active, content_type});
         total_size += len;
       } else {
