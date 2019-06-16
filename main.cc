@@ -804,7 +804,7 @@ void list_backups() {
 
   for (auto bhash : root->backups) {
     auto backup = db->load<Backup>(bhash);
-    print(backup->name, " ", backup->entry.hash);
+    print(backup->name, " ", backup->entry.hash, " ", user_readable_size(backup->size));
   }
 }
 
