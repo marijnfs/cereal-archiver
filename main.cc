@@ -101,6 +101,8 @@ enum Overwrite {
 
 struct DB {
   DB(string db_path, bool read_only_ = false) {
+    read_only = read_only_;
+
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
@@ -109,11 +111,10 @@ struct DB {
     // c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     
-    c(mdb_txn_begin(env, NULL, 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
     c(mdb_txn_commit(txn));
 
-    read_only = read_only_;
   }
 
   ~DB() { 
@@ -140,7 +141,7 @@ struct DB {
     std::cerr << key_len << " " << data_len << std::endl;
     MDB_val mkey{key_len, key}, mdata{data_len, data};
 
-    c(mdb_txn_begin(env, NULL, 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
     int result = mdb_put(txn, dbi, &mkey, &mdata, (overwrite == NOOVERWRITE) ? MDB_NOOVERWRITE : 0);
     if (result == MDB_KEYEXIST) {
       c(mdb_txn_commit(txn));
@@ -155,7 +156,7 @@ struct DB {
   PBytes get(uint8_t *ptr, uint64_t len) {
     MDB_val mkey{len, ptr};
     MDB_val mdata;
-    c(mdb_txn_begin(env, NULL, 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
 
     if (result == MDB_NOTFOUND) {
@@ -178,7 +179,7 @@ struct DB {
   bool has(std::vector<uint8_t> &key) {
     MDB_val mkey{key.size(), &key[0]};
     MDB_val mdata;
-    c(mdb_txn_begin(env, NULL, 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
     c(mdb_txn_commit(txn));
     return result != MDB_NOTFOUND;
@@ -190,7 +191,7 @@ struct DB {
 
   void print_stat() {
     MDB_stat stat;
-    c(mdb_txn_begin(env, NULL, 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
     mdb_stat(txn, dbi, &stat);
     auto db_size = stat.ms_psize * (stat.ms_leaf_pages + stat.ms_branch_pages + stat.ms_overflow_pages);
     std::cout << "size: " << db_size << " " << user_readable_size(db_size) << std::endl;
@@ -238,7 +239,7 @@ struct DB {
 
   void iterate_all(function<void(Bytes &, Bytes&)> func) {
     MDB_cursor *cursor;
-    mdb_txn_begin(env, NULL, 0, &txn);
+    mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
 
     MDB_val key, value;
@@ -263,7 +264,7 @@ struct DB {
 
   void check_all() {
     MDB_cursor *cursor;
-    mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
+    mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
 
     MDB_val key, value;
