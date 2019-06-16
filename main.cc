@@ -121,6 +121,11 @@ struct DB {
     mdb_dbi_close(env, dbi); 
   }
 
+  bool put(Bytes &data) {
+    auto hash = get_hash(data);
+    return put(*hash, data, NOOVERWRITE);
+  }
+
   //put function for vector types
   bool put(Bytes &key, Bytes &data, Overwrite overwrite) {
     return put(key.data(), data.data(), 
@@ -146,7 +151,7 @@ struct DB {
 
     return true;
   }
-
+  
   PBytes get(uint8_t *ptr, uint64_t len) {
     MDB_val mkey{len, ptr};
     MDB_val mdata;
@@ -621,19 +626,58 @@ void save_root_hash(DB &db, Bytes hash) {
 void join(string join_path) {
   auto other_db = make_unique<DB>(join_path, true);
 
+  //getting root struct
   auto root_hash = get_root_hash(*db);
   auto root = db->load<Root>(*root_hash);
 
+  //getting source root struct
   auto other_root_hash = get_root_hash(*other_db);
   auto other_root = other_db->load<Root>(*other_root_hash);
+
 
   for (auto other_backup_hash : other_root->backups) {
     bool add(true);
     for (auto backup_hash : root->backups)
       if (other_backup_hash == backup_hash)
         add = false;
-    if (add)
-      root->backups.push_back(other_backup_hash);
+    if (add) { //source backup is not present, so add it
+      root->backups.push_back(other_backup_hash); //add it to root
+
+      //now add all files
+      auto src_backup = other_db->load<Backup>(other_backup_hash);
+      db->store(src_backup);
+
+      stack<unique_ptr<Dir>> entry_hashes;
+      entry_hashes.push(other_db->load<Dir>(src_backup->entry.hash));
+
+      //run through stack, every item needs to be stored
+      while (!entry_hashes.empty()) {
+        auto cur_dir = move(entry_hashes.top());
+        entry_hashes.pop();
+
+        //store the dir
+        db->store(cur_dir);
+
+        for (auto &entry : cur_dir->entries) {
+          if (entry.type == EntryType::SINGLEFILE) {
+            auto data = other_db->get(entry.hash);
+            db->put(*data);
+          }
+          if (entry.type == EntryType::MULTIFILE) {
+            auto multipart = other_db->load<MultiPart>(entry.hash);
+            db->store(multipart); //store the multipart
+
+            for (auto part_hash :  multipart->hashes) {
+              auto data = other_db->get(part_hash);
+              db->put(*data); //store the data blobs
+            }
+          }
+          if (entry.type == EntryType::DIRECTORY) {
+            entry_hashes.push(other_db->load<Dir>(entry.hash));
+          }
+        }
+      }
+    }
   }
 
   auto new_root_hash = db->store(*root);
