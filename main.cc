@@ -25,7 +25,7 @@
 #include "bytes.h"
 #include "server/server.hpp"
 #include "server/mime_types.hpp"
-
+#include "args.hxx"
 
 uint HASH_BYTES(32);
 uint64_t MAX_FILESIZE(0);
@@ -106,15 +106,13 @@ struct DB {
     //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
     c(mdb_env_set_mapsize(env, size_t(840) << 30)); // One TB
     //c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
-    c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
+    // c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
+    c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     
     c(mdb_txn_begin(env, NULL, 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
-    // char *bla = " ";
-    // MDB_val mkey{1, bla}, mdata{1, bla};
-    // c( mdb_put(txn, *dbi, &mkey, &mdata, 0) );
     c(mdb_txn_commit(txn));
-    // cout << "done" << endl;
+
     read_only = read_only_;
   }
 
@@ -691,13 +689,14 @@ void output_file(string path, string target_path) {
       for (auto entry : dir->entries) {
         if (current_search == entry.name) {
           if (entry.type != EntryType::DIRECTORY) {
+            print("found file, writing to ", target_path);
             ofstream outfile(target_path);
             
             if (entry.type == EntryType::SINGLEFILE) {
               auto data = db->get(entry.hash);
-              print("found file: ", entry.name);
+              print("found file: ", entry.name, data->size());
               outfile.write((char*)data->data(), data->size());
-
+              outfile.flush();
             } else if (entry.type == EntryType::MULTIFILE) {
               print("found multi file: ", entry.name);
               auto multi = db->load<MultiPart>(entry.hash);
@@ -706,6 +705,7 @@ void output_file(string path, string target_path) {
                 auto data = db->get(h);
                 outfile.write((char*)data->data(), data->size());
               }
+              outfile.flush();
             }
             throw StringException("Found File");
           } else {
@@ -1053,69 +1053,101 @@ void serve(string port) {
 
   http::server::server server(port, callback);
   server.run();
-
-
 }
 
 int main(int argc, char **argv) {
   cout << "Cereal Archiver" << endl;
   init_blakekey();
-  db = make_unique<DB>(DBNAME);
 
-  if (argc < 2) {
-    cerr << "no command given, use: " << argv[0] << " [command] [options]" << endl;
-    cerr << "command = [archive, dryrun, duplicate, filelist, list, output, stats]" << endl;
-    return -1;
+  //parse arguments
+  args::ArgumentParser parser("Cereal Archiver - lmdb and cereal based archiver");
+  args::ValueFlag<string> db_path(parser, "db", "Path to DB", {"db"}, "archive.db");
+  args::ValueFlag<bool> read_only(parser, "read_only", "Create DB If not exists", {"read_only", "ro"}, true);
+
+  args::Group commands(parser, "commands");
+
+  args::Command archive_command(commands, "archive", "archive a directory into the db");
+  args::ValueFlag<string> arch_name(archive_command, "name", "Name for this directory in the archive", {"name"}, args::Options::Required);
+  args::ValueFlag<string> arch_path(archive_command, "path", "Path to directory", {"path"}, args::Options::Required);
+  args::ValueFlag<string> arch_description(archive_command, "description", "archive description", {"description"});
+
+  args::Command stat_command(commands, "stat", "print db stats");
+  args::Command list_command(commands, "list", "list backups");
+  args::Command filelist_command(commands, "filelist", "list all files in all backups");
+  args::Command check_command(commands, "check", "check hash integrity");
+  args::Command move_to_command(commands, "moveto", "duplicate db");
+  args::ValueFlag<string> target_db(move_to_command, "targetdb", "target path of db to move to", {"targetdb"}, args::Options::Required);
+
+  args::Command join_command(commands, "join", "Import backups from source db into this database");
+  args::ValueFlag<string> source_db(join_command, "source_db", "target path of db to move to", {"source_db"}, args::Options::Required);
+
+
+  args::Command extract_command(commands, "extract", "extract file to a target path");
+  args::ValueFlag<string> file_name(extract_command, "file", "file to output, syntax: dbname:filepath", {"file"}, args::Options::Required);
+  args::ValueFlag<string> file_target_path(extract_command, "target", "target path to store file", {"target"}, args::Options::Required);
+
+  args::Command serve_command(commands, "serve", "record changes to the repository");
+  args::ValueFlag<string> port(serve_command, "port", "port of server", {"port"}, "9090");
+
+  args::Command fix_command(commands, "fix", "record changes to the repository");
+   
+  args::HelpFlag help(parser, "help", "Display this help menu", {'h', "help"});
+  args::CompletionFlag completion(parser, {"complete"});
+    
+
+  try
+  {
+      parser.ParseCLI(argc, argv);
   }
- 
-  string command(argv[1]);
-  if (command == "archive") {
-    if (argc < 4) {
-      cerr << "usage: " << argv[0] << " " << command << " [name] [path] <description>" << endl;
-      return -1;
-    }
-    string name(argv[2]);
-    string description;
-    if (argc > 4)
-      description = string(argv[4]);
+  catch (const args::Completion& e)
+  {
+      std::cout << e.what();
+      return 0;
+  }
+  catch (const args::Help&)
+  {
+      std::cout << parser;
+      return 0;
+  }
+  catch (const args::ParseError& e)
+  {
+      std::cerr << e.what() << std::endl;
+      std::cerr << parser;
+      return 1;
+  }
+  catch (const args::ValidationError& e)
+  {
+      std::cerr << e.what() << std::endl;
+      std::cerr << parser;
+      return 1;
+  } 
 
-    GFile *file = g_file_new_for_path(argv[3]);
-    backup(file, name, description);
-  } else if (command == "stat") {
+  db = make_unique<DB>(args::get(db_path), args::get(read_only));
+
+
+  if (archive_command) {
+    auto arch_path_str = args::get(arch_path);
+    GFile *file = g_file_new_for_path(arch_path_str.c_str());
+    backup(file, args::get(arch_name), args::get(arch_description));
+  } else if (stat_command) {
     db->print_stat();
-  } else if (command == "list") {
+  } else if (list_command) {
     list_backups();
-  } else if (command == "filelist") {
+  } else if (filelist_command) {
     list_all_files();
-  } else if (command == "check") {
+  } else if (check_command) {
     db->check_all();
-  } else if (command == "moveto") {
-    if (argc < 3) {
-      cerr << "usage: " << argv[0] << " " << command << " [path of other archive]" << endl;
-      return -1;
-    }
-    move_to(argv[2]);
-  } else if (command == "file") {
-    if (argc < 4) {
-      cerr << "usage: " << argv[0] << " " << command << " [backup:filepath] [target path]" << endl;
-      return -1;
-    }
-    output_file(argv[2], argv[3]);
-  } else if (command == "join") {
-    if (argc < 3) {
-      cerr << "usage: " << argv[0] << " " << command << " [path of other archive]" << endl;
-      return -1;
-    }
-    join(argv[2]);
-  } else if (command == "serve") {
-    if (argc < 3) {
-      cerr << "usage: " << argv[0] << " " << command << " [port]" << endl;
-      return -1;
-    }
-    serve(argv[2]);
-  } else if (command == "fix") {
+  } else if (move_to_command) {
+    move_to(args::get(target_db));
+  } else if (extract_command) {
+    output_file(args::get(file_name), args::get(file_target_path));
+  } else if (join_command) {
+    join(args::get(source_db));
+  } else if (serve_command) {
+    serve(args::get(port));
+  } else if (fix_command) {
     fix();
   } else {
-    print("No such command: ", command);
+    print("No command given");
   }  
 }
