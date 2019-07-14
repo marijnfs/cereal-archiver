@@ -138,7 +138,6 @@ struct DB {
     if (read_only)
       throw StringException("Not allowed to store, Read Only!");
 
-    std::cerr << key_len << " " << data_len << std::endl;
     MDB_val mkey{key_len, key}, mdata{data_len, data};
 
     c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
@@ -221,6 +220,7 @@ struct DB {
     put(*key, *data, NOOVERWRITE);
     return move(key);
   }
+
 
   template <typename T>
   unique_ptr<T> load(Bytes &key) {
@@ -431,13 +431,13 @@ struct Backup {
   uint64_t version = VERSION;
   string name;
   string description;
-  uint64_t size;
+  uint64_t size = 0;
 
   //temporarily it will have both
   Bytes entry_hash;
   Entry entry; 
 
-  uint64_t timestamp;
+  uint64_t timestamp = 0;
 
   template <class Archive>
   void load( Archive & ar ) {
@@ -646,8 +646,8 @@ void join(string join_path) {
 
       //now add all files
       auto src_backup = other_db->load<Backup>(other_backup_hash);
-      db->store(src_backup);
-
+      db->store(*src_backup);
+      
       stack<unique_ptr<Dir>> entry_hashes;
       entry_hashes.push(other_db->load<Dir>(src_backup->entry.hash));
 
@@ -657,16 +657,18 @@ void join(string join_path) {
         entry_hashes.pop();
 
         //store the dir
-        db->store(cur_dir);
+        db->store(*cur_dir);
 
         for (auto &entry : cur_dir->entries) {
+          print("entry: ", entry.name);
+          
           if (entry.type == EntryType::SINGLEFILE) {
             auto data = other_db->get(entry.hash);
             db->put(*data);
           }
           if (entry.type == EntryType::MULTIFILE) {
             auto multipart = other_db->load<MultiPart>(entry.hash);
-            db->store(multipart); //store the multipart
+            db->store(*multipart); //store the multipart
 
             for (auto part_hash :  multipart->hashes) {
               auto data = other_db->get(part_hash);
@@ -681,11 +683,9 @@ void join(string join_path) {
     }
   }
 
+
   auto new_root_hash = db->store(*root);
 
-  other_db->iterate_all([](Bytes &key, Bytes &value) {
-    db->put(key, value, NOOVERWRITE);
-  });
 
   save_root_hash(*db, *new_root_hash);
 }
@@ -1055,7 +1055,9 @@ void serve(string port) {
             Dir dir;
             ar(dir);
             output_buf << "<html><head><title></title></head><body><ul>" << endl;
-            sort(dir.entries.begin(), dir.entries.end(), [](Entry const&l, Entry const &r) {return l.size > r.size;});
+
+            // sort by size
+            // sort(dir.entries.begin(), dir.entries.end(), [](Entry const&l, Entry const &r) {return l.size > r.size;});
             for (auto e : dir.entries) {
               string entry_content_type = e.content_type;
               if (entry_content_type.empty())
