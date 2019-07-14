@@ -108,8 +108,8 @@ struct DB {
     //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
     c(mdb_env_set_mapsize(env, size_t(840) << 30)); // One TB
     //c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
-    // c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
-    c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
+    c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
+    //c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     
     c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
