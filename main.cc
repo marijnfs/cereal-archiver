@@ -625,6 +625,7 @@ void save_root_hash(DB &db, Bytes hash) {
 }
 
 void join(string join_path) {
+  ofstream err_file("log.err", std::ofstream::app);
   auto other_db = make_unique<DB>(join_path, true);
 
   //getting root struct
@@ -661,7 +662,11 @@ void join(string join_path) {
 
         for (auto &entry : cur_dir->entries) {
           print("entry: ", entry.name);
-          
+          if (entry.hash.size() == 0) {
+            print("Hash screwed up for entry: ", entry.name);
+            err_file << "Hash screwed up for entry: " <<  entry.name << endl;
+            continue;
+          }
           if (entry.type == EntryType::SINGLEFILE) {
             auto data = other_db->get(entry.hash);
             db->put(*data);
