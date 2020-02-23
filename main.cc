@@ -15,6 +15,10 @@
 #include <cereal/types/vector.hpp>
 #include <cereal/types/memory.hpp>
 
+#include <rocksdb/db.h>
+#include <rocksdb/slice.h>
+#include <rocksdb/options.h>
+
 
 #include "blake2.h"
 
@@ -105,7 +109,6 @@ struct DB {
     db_path(db_path_),
     read_only(read_only_)
   {
-    throw std::runtime_error("Not implemented");
   }
 
 
@@ -196,6 +199,68 @@ struct DB {
   bool read_only = true;
 };
 
+struct Rocks_DB : public DB {
+  Rocks_DB(string db_path_, bool read_only_ = true) : DB(db_path_, read_only_) {
+    if (db_path.size() < 8 || db_path.substr(db_path.size() - 8) != ".rocksdb")
+      throw std::runtime_error("db has wrong name, must end with .rocksdb");
+    rocksdb::Options options;
+    // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+    options.IncreaseParallelism();
+    options.OptimizeLevelStyleCompaction();
+    // create the DB if it's not already present
+    options.create_if_missing = !read_only_;
+
+    rocksdb::Status s = rocksdb::DB::Open(options, db_path, &db);
+    if (!s.ok()) {
+      cerr << "Couldn't open " << db_path << endl;
+      throw std::runtime_error("Failed to open db: ");
+    }
+
+    readOptions = rocksdb::ReadOptions();
+    writeOptions = rocksdb::WriteOptions();
+  }
+
+  bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+    auto status = db->Put(writeOptions,
+                          rocksdb::Slice((const char *)key, key_len),
+                          rocksdb::Slice((const char *)data, data_len));
+    if (!status.ok()) {
+      return false;
+    }
+    return true;
+  }
+
+  PBytes get(uint8_t *ptr, uint64_t len) {
+    std::string data;
+    auto status = db->Get(readOptions, rocksdb::Slice((const char *)ptr, len), &data);
+    if (!status.ok())
+      return nullptr;
+
+    return make_unique<Bytes>(reinterpret_cast<uint8_t const *>(data.data()),
+                             reinterpret_cast<uint8_t const *>(data.data()) + data.size());
+  }
+
+  virtual bool has(std::vector<uint8_t> &key) {
+    auto status = db->Get(readOptions, rocksdb::Slice((const char *)key.data(), key.size()), nullptr);
+    return status.ok();
+  }
+
+  void iterate_all(function<void(Bytes &, Bytes&)> func) {
+    rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+      Bytes key_bytes(it->key().data(), it->key().data() + it->key().size());
+      Bytes value_bytes(it->value().data(), it->value().data() + it->value().size());
+      func(key_bytes, value_bytes);
+    }
+    assert(it->status().ok()); // Check for any errors found during the scan
+    delete it;
+  }
+
+  rocksdb::DB *db = nullptr;
+
+  rocksdb::WriteOptions writeOptions;
+  rocksdb::ReadOptions readOptions;
+};
 
 struct MDB_DB : public DB {
   MDB_DB(string db_path_, bool read_only_ = true) : DB(db_path_, read_only_) {
@@ -1226,7 +1291,8 @@ int main(int argc, char **argv) {
       return 1;
   } 
 
-  db = make_unique<DB>(args::get(db_path), args::get(read_only));
+  db = make_unique<Rocks_DB>(args::get(db_path), args::get(read_only));
+  // db = make_unique<MDB_DB>(args::get(db_path), args::get(read_only));
 
 
   if (archive_command) {
