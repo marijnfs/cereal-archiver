@@ -433,7 +433,7 @@ struct MDB_DB : public DB {
 
 std::unique_ptr<DB> load_db(string path, ReadOnly readonly) {
   /// if ends with .rocksdb we assume its rocksdb, otherwise lmdb
-  if (path.size() < 8 || path.substr(path.size() - 8) != ".rocksdb")
+  if (path.size() < 8 || path.substr(path.size() - 8) == ".rocksdb")
     return std::make_unique<Rocks_DB>(path, readonly);
   else
     return std::make_unique<MDB_DB>(path, readonly);
@@ -1303,9 +1303,7 @@ int main(int argc, char **argv) {
       return 1;
   } 
 
-  db = make_unique<Rocks_DB>(args::get(db_path), args::get(read_only) ? ReadOnly::Yes : ReadOnly::No);
-  // db = make_unique<MDB_DB>(args::get(db_path), args::get(read_only));
-
+  db = load_db(args::get(db_path), args::get(read_only) ? ReadOnly::Yes : ReadOnly::No);
 
   if (archive_command) {
     auto arch_path_str = args::get(arch_path);
