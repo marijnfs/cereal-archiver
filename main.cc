@@ -38,6 +38,11 @@ uint8_t blakekey[BLAKE2B_KEYBYTES];
 uint64_t VERSION(1);
 bool old_load(false);
 
+enum class ReadOnly {
+  No = 0,
+  Yes = 1
+};
+
 enum class BlobType {
   NONE,
   ROOT,
@@ -105,7 +110,7 @@ enum Overwrite {
 
 
 struct DB {
-  DB(string db_path_, bool read_only_ = true) :
+  DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) :
     db_path(db_path_),
     read_only(read_only_)
   {
@@ -130,7 +135,7 @@ struct DB {
 
   template <typename T>
   PBytes store(T &value) {
-    if (read_only)
+    if (read_only == ReadOnly::Yes)
       throw StringException("Not allowed to store, Read Only!");
     ostringstream oss;
     {
@@ -196,11 +201,11 @@ struct DB {
   }
 
   string db_path;
-  bool read_only = true;
+  ReadOnly read_only = ReadOnly::Yes;
 };
 
 struct Rocks_DB : public DB {
-  Rocks_DB(string db_path_, bool read_only_ = true) : DB(db_path_, read_only_) {
+  Rocks_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) : DB(db_path_, read_only_) {
     if (db_path.size() < 8 || db_path.substr(db_path.size() - 8) != ".rocksdb")
       throw std::runtime_error("db has wrong name, must end with .rocksdb");
     rocksdb::Options options;
@@ -208,7 +213,7 @@ struct Rocks_DB : public DB {
     options.IncreaseParallelism();
     options.OptimizeLevelStyleCompaction();
     // create the DB if it's not already present
-    options.create_if_missing = !read_only_;
+    options.create_if_missing = read_only_ == ReadOnly::No;
 
     rocksdb::Status s = rocksdb::DB::Open(options, db_path, &db);
     if (!s.ok()) {
@@ -221,6 +226,8 @@ struct Rocks_DB : public DB {
   }
 
   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+    if (read_only == ReadOnly::Yes )
+      throw std::runtime_error("Not allowed to put values in readonly database");
     auto status = db->Put(writeOptions,
                           rocksdb::Slice((const char *)key, key_len),
                           rocksdb::Slice((const char *)data, data_len));
@@ -263,16 +270,16 @@ struct Rocks_DB : public DB {
 };
 
 struct MDB_DB : public DB {
-  MDB_DB(string db_path_, bool read_only_ = true) : DB(db_path_, read_only_) {
+  MDB_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) : DB(db_path_, read_only_) {
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
     c(mdb_env_set_mapsize(env, size_t(840) << 30)); // One TB
     //c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
-    c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
+    c(mdb_env_open(env, db_path.c_str(), (read_only == ReadOnly::No ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC) : (MDB_NOSUBDIR | MDB_RDONLY)), read_only == ReadOnly::No ? 0664 : 0444));
     //c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR | MDB_WRITEMAP) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
     
-    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
     c(mdb_txn_commit(txn));
 
@@ -287,12 +294,12 @@ struct MDB_DB : public DB {
 
   //classic byte pointer put function
   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
-    if (read_only)
+    if (read_only == ReadOnly::Yes )
       throw StringException("Not allowed to store, Read Only!");
 
     MDB_val mkey{key_len, key}, mdata{data_len, data};
 
-    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     int result = mdb_put(txn, dbi, &mkey, &mdata, (overwrite == NOOVERWRITE) ? MDB_NOOVERWRITE : 0);
     if (result == MDB_KEYEXIST) {
       c(mdb_txn_commit(txn));
@@ -307,7 +314,7 @@ struct MDB_DB : public DB {
   PBytes get(uint8_t *ptr, uint64_t len) {
     MDB_val mkey{len, ptr};
     MDB_val mdata;
-    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
 
     if (result == MDB_NOTFOUND) {
@@ -327,7 +334,7 @@ struct MDB_DB : public DB {
   bool has(std::vector<uint8_t> &key) {
     MDB_val mkey{key.size(), &key[0]};
     MDB_val mdata;
-    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
     c(mdb_txn_commit(txn));
     return result != MDB_NOTFOUND;
@@ -339,7 +346,7 @@ struct MDB_DB : public DB {
 
   void print_stat() {
     MDB_stat stat;
-    c(mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn));
+    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     mdb_stat(txn, dbi, &stat);
     auto db_size = stat.ms_psize * (stat.ms_leaf_pages + stat.ms_branch_pages + stat.ms_overflow_pages);
     std::cout << "size: " << db_size << " " << user_readable_size(db_size) << std::endl;
@@ -355,7 +362,7 @@ struct MDB_DB : public DB {
 
   void iterate_all(function<void(Bytes &, Bytes&)> func) {
     MDB_cursor *cursor;
-    mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn);
+    mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
 
     MDB_val key, value;
@@ -380,7 +387,7 @@ struct MDB_DB : public DB {
 
   void check_all() {
     MDB_cursor *cursor;
-    mdb_txn_begin(env, NULL, read_only ? MDB_RDONLY : 0, &txn);
+    mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
 
     MDB_val key, value;
@@ -414,7 +421,6 @@ struct MDB_DB : public DB {
   MDB_env *env = 0;
   MDB_dbi dbi;
   MDB_txn *txn = 0;
-  bool read_only = false;
 
   //check function
   void c(int rc) {
@@ -425,6 +431,13 @@ struct MDB_DB : public DB {
   }
 };
 
+std::unique_ptr<DB> load_db(string path, ReadOnly readonly) {
+  /// if ends with .rocksdb we assume its rocksdb, otherwise lmdb
+  if (path.size() < 8 || path.substr(path.size() - 8) != ".rocksdb")
+    return std::make_unique<Rocks_DB>(path, readonly);
+  else
+    return std::make_unique<MDB_DB>(path, readonly);
+}
 
 struct Entry {
   uint64_t version = VERSION;
@@ -742,7 +755,7 @@ void save_root_hash(DB &db, Bytes hash) {
 
 void join(string join_path) {
   ofstream err_file("log.err", std::ofstream::app);
-  std::unique_ptr<DB> other_db = make_unique<MDB_DB>(join_path, true);
+  std::unique_ptr<DB> other_db = load_db(join_path, ReadOnly::Yes);
 
   //getting root struct
   auto root_hash = get_root_hash(*db);
@@ -1047,7 +1060,6 @@ unique_ptr<Entry> convert_entry(DB &target_db, Entry &entry) {
 void move_to(string target_db_path) {
   if (!old_load)
     throw StringException("moveto is meant for old load");
-  db->read_only = true;
   auto target_db = make_unique<DB>(target_db_path);
 
   auto root_hash = get_root_hash(*db);
@@ -1291,7 +1303,7 @@ int main(int argc, char **argv) {
       return 1;
   } 
 
-  db = make_unique<Rocks_DB>(args::get(db_path), args::get(read_only));
+  db = make_unique<Rocks_DB>(args::get(db_path), args::get(read_only) ? ReadOnly::Yes : ReadOnly::No);
   // db = make_unique<MDB_DB>(args::get(db_path), args::get(read_only));
 
 
