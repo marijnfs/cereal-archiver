@@ -99,10 +99,106 @@ enum Overwrite {
   NOOVERWRITE = 1
 };
 
-struct DB {
-  DB(string db_path, bool read_only_ = false) {
-    read_only = read_only_;
 
+struct DB {
+  DB(string db_path_, bool read_only_ = true) :
+    db_path(db_path_),
+    read_only(read_only_)
+  {
+    throw std::runtime_error("Not implemented");
+  }
+
+
+  bool put(Bytes &data) {
+    auto hash = get_hash(data);
+    return put(*hash, data, NOOVERWRITE);
+  }
+
+  //put function for vector types
+  bool put(Bytes &key, Bytes &data, Overwrite overwrite) {
+    return put(key.data(), data.data(), 
+              key.size(), data.size(), overwrite);
+  }
+
+  PBytes get(std::vector<uint8_t> &key) {
+    return get(key.data(), key.size());
+  }
+  
+
+  template <typename T>
+  PBytes store(T &value) {
+    if (read_only)
+      throw StringException("Not allowed to store, Read Only!");
+    ostringstream oss;
+    {
+      cereal::PortableBinaryOutputArchive ar(oss);
+      ar(value);
+      oss.flush();
+    }
+    auto contiguous_buf = oss.str();
+    auto data = make_unique<Bytes>(contiguous_buf.begin(), contiguous_buf.end());
+    auto key = get_hash(*data);
+    this->put(*key, *data, NOOVERWRITE);
+    return move(key);
+  }
+
+
+  template <typename T>
+  unique_ptr<T> load(Bytes &key) {
+    auto data = get(key);
+    if (!data)
+      return nullptr;
+    auto value = make_unique<T>();
+    {
+      std::string buf((uint8_t*)data->data(), (uint8_t*)data->data() + data->size()); 
+      istringstream iss(buf);
+      cereal::PortableBinaryInputArchive ar(iss);
+      ar(*value);
+    }
+    return value;
+  }
+
+  virtual ~DB() { 
+  }
+
+//classic byte pointer put function
+  virtual bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  virtual PBytes get(uint8_t *ptr, uint64_t len) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  virtual bool has(std::vector<uint8_t> &key) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  virtual void copy_db(std::string path) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  virtual void print_stat() {
+    throw std::runtime_error("Not implemented");
+  }
+
+
+  virtual void check_all() {
+    throw std::runtime_error("Not implemented");    
+  }
+
+
+  virtual void iterate_all(function<void(Bytes &, Bytes&)> func) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  string db_path;
+  bool read_only = true;
+};
+
+
+struct MDB_DB : public DB {
+  MDB_DB(string db_path_, bool read_only_ = true) : DB(db_path_, read_only_) {
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     //c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
@@ -117,21 +213,12 @@ struct DB {
 
   }
 
-  ~DB() { 
+  ~MDB_DB() { 
     mdb_env_sync(env, 1);
     mdb_dbi_close(env, dbi); 
   }
 
-  bool put(Bytes &data) {
-    auto hash = get_hash(data);
-    return put(*hash, data, NOOVERWRITE);
-  }
-
-  //put function for vector types
-  bool put(Bytes &key, Bytes &data, Overwrite overwrite) {
-    return put(key.data(), data.data(), 
-              key.size(), data.size(), overwrite);
-  }
+  
 
   //classic byte pointer put function
   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
@@ -171,9 +258,6 @@ struct DB {
     return ret_val;
   }
 
-  PBytes get(std::vector<uint8_t> &key) {
-    return get(key.data(), key.size());
-  }
 
   bool has(std::vector<uint8_t> &key) {
     MDB_val mkey{key.size(), &key[0]};
@@ -202,39 +286,6 @@ struct DB {
     printf("  Overflow pages: %zu\n", stat.ms_overflow_pages);
     printf("  Entries: %zu\n", stat.ms_entries);
 
-  }
-
-  template <typename T>
-  PBytes store(T &value) {
-    if (read_only)
-      throw StringException("Not allowed to store, Read Only!");
-    ostringstream oss;
-    {
-      cereal::PortableBinaryOutputArchive ar(oss);
-      ar(value);
-      oss.flush();
-  	}
-    auto contiguous_buf = oss.str();
-    auto data = make_unique<Bytes>(contiguous_buf.begin(), contiguous_buf.end());
-    auto key = get_hash(*data);
-    put(*key, *data, NOOVERWRITE);
-    return move(key);
-  }
-
-
-  template <typename T>
-  unique_ptr<T> load(Bytes &key) {
-    auto data = get(key);
-    if (!data)
-      return nullptr;
-    auto value = make_unique<T>();
-    {
-      std::string buf((uint8_t*)data->data(), (uint8_t*)data->data() + data->size());	
-      istringstream iss(buf);
-      cereal::PortableBinaryInputArchive ar(iss);
-      ar(*value);
-    }
-    return value;
   }
 
   void iterate_all(function<void(Bytes &, Bytes&)> func) {
@@ -626,7 +677,7 @@ void save_root_hash(DB &db, Bytes hash) {
 
 void join(string join_path) {
   ofstream err_file("log.err", std::ofstream::app);
-  auto other_db = make_unique<DB>(join_path, true);
+  std::unique_ptr<DB> other_db = make_unique<MDB_DB>(join_path, true);
 
   //getting root struct
   auto root_hash = get_root_hash(*db);
