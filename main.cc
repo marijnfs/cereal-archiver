@@ -225,6 +225,11 @@ struct Rocks_DB : public DB {
     writeOptions = rocksdb::WriteOptions();
   }
 
+  ~Rocks_DB() {
+    if (db)
+      delete db;
+  }
+
   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
     if (read_only == ReadOnly::Yes )
       throw std::runtime_error("Not allowed to put values in readonly database");
