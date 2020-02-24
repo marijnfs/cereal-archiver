@@ -226,8 +226,12 @@ struct Rocks_DB : public DB {
   }
 
   ~Rocks_DB() {
-    if (db)
+    if (db) {
+      auto status = db->Close();
+      if (!status.ok())
+        throw std::runtime_error("Closing of Rocksdb database failed");
       delete db;
+    }
   }
 
   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
