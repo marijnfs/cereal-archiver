@@ -15,9 +15,9 @@
 #include <cereal/types/vector.hpp>
 #include <cereal/types/memory.hpp>
 
-#include <rocksdb/db.h>
-#include <rocksdb/slice.h>
-#include <rocksdb/options.h>
+// #include <rocksdb/db.h>
+// #include <rocksdb/slice.h>
+// #include <rocksdb/options.h>
 
 
 #include "blake2.h"
@@ -171,6 +171,7 @@ struct DB {
 
 //classic byte pointer put function
   virtual bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+
     throw std::runtime_error("Not implemented");
   }
 
@@ -204,79 +205,97 @@ struct DB {
   ReadOnly read_only = ReadOnly::Yes;
 };
 
-struct Rocks_DB : public DB {
-  Rocks_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) : DB(db_path_, read_only_) {
-    if (db_path.size() < 8 || db_path.substr(db_path.size() - 8) != ".rocksdb")
-      throw std::runtime_error("db has wrong name, must end with .rocksdb");
-    rocksdb::Options options;
-    // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
-    options.IncreaseParallelism();
-    options.OptimizeLevelStyleCompaction();
-    // create the DB if it's not already present
-    options.create_if_missing = read_only_ == ReadOnly::No;
+// struct Rocks_DB : public DB {
+//   Rocks_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) : DB(db_path_, read_only_) {
+//     if (db_path.size() < 8 || db_path.substr(db_path.size() - 8) != ".rocksdb")
+//       throw std::runtime_error("db has wrong name, must end with .rocksdb");
+//     rocksdb::Options options;
+    
+//     // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+//     options.IncreaseParallelism();
+//     options.OptimizeLevelStyleCompaction();
+//     options.OptimizeForPointLookup(512 << 20);
+//     options.unordered_write = true;
+//     options.write_buffer_size = 512 << 20; //512 megabyte
+//     //options.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10, true))
+        
+//     // create the DB if it's not already present
+//     options.create_if_missing = read_only_ == ReadOnly::No;
 
-    rocksdb::Status s = rocksdb::DB::Open(options, db_path, &db);
-    if (!s.ok()) {
-      cerr << "Couldn't open " << db_path << endl;
-      throw std::runtime_error("Failed to open db: ");
-    }
+//     rocksdb::Status s = rocksdb::DB::Open(options, db_path, &db);
+//     if (!s.ok()) {
+//       cerr << "Couldn't open " << db_path << endl;
+//       throw std::runtime_error("Failed to open db: ");
+//     }
 
-    readOptions = rocksdb::ReadOptions();
-    writeOptions = rocksdb::WriteOptions();
-  }
+//     readOptions = rocksdb::ReadOptions();
+//     quickReadOptions = rocksdb::ReadOptions();
+//     quickReadOptions.verify_checksums = false;
+    
+//     writeOptions = rocksdb::WriteOptions();
+//   }
 
-  ~Rocks_DB() {
-    if (db) {
-      auto status = db->Close();
-      if (!status.ok())
-        throw std::runtime_error("Closing of Rocksdb database failed");
-      delete db;
-    }
-  }
+//   ~Rocks_DB() {
+//     if (db) {
+//         db->SyncWAL();
+//         auto status = db->Close();
+//         if (!status.ok())
+//             cerr << "Closing of Rocksdb database failed" << endl;
+//         delete db;
+//     }
+//   }
 
-  bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
-    if (read_only == ReadOnly::Yes )
-      throw std::runtime_error("Not allowed to put values in readonly database");
-    auto status = db->Put(writeOptions,
-                          rocksdb::Slice((const char *)key, key_len),
-                          rocksdb::Slice((const char *)data, data_len));
-    if (!status.ok()) {
-      return false;
-    }
-    return true;
-  }
+//   bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+//       if (read_only == ReadOnly::Yes )
+//           throw std::runtime_error("Not allowed to put values in readonly database");
+//       if (overwrite == NOOVERWRITE) {
+//           std::string tmp;
+//           if (!db->Get(quickReadOptions, rocksdb::Slice((const char *)key, key_len), &tmp).ok()) {
+//               print("Skipping insertion");
+//               return true;
+//           }
+//       }
+//       auto status = db->Put(writeOptions,
+//                           rocksdb::Slice((const char *)key, key_len),
+//                           rocksdb::Slice((const char *)data, data_len));
+//     if (!status.ok()) {
+//       return false;
+//     }
+//     return true;
+//   }
 
-  PBytes get(uint8_t *ptr, uint64_t len) {
-    std::string data;
-    auto status = db->Get(readOptions, rocksdb::Slice((const char *)ptr, len), &data);
-    if (!status.ok())
-      return nullptr;
+//   PBytes get(uint8_t *ptr, uint64_t len) {
+//     std::string data;
+//     auto status = db->Get(readOptions, rocksdb::Slice((const char *)ptr, len), &data);
+//     if (!status.ok())
+//       return nullptr;
 
-    return make_unique<Bytes>(reinterpret_cast<uint8_t const *>(data.data()),
-                             reinterpret_cast<uint8_t const *>(data.data()) + data.size());
-  }
+//     return make_unique<Bytes>(reinterpret_cast<uint8_t const *>(data.data()),
+//                              reinterpret_cast<uint8_t const *>(data.data()) + data.size());
+//   }
 
-  virtual bool has(std::vector<uint8_t> &key) {
-    auto status = db->Get(readOptions, rocksdb::Slice((const char *)key.data(), key.size()), nullptr);
-    return status.ok();
-  }
+//   virtual bool has(std::vector<uint8_t> &key) {
+//     auto status = db->Get(readOptions, rocksdb::Slice((const char *)key.data(), key.size()), nullptr);
+//     return status.ok();
+//   }
 
-  void iterate_all(function<void(Bytes &, Bytes&)> func) {
-    rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
-    for (it->SeekToFirst(); it->Valid(); it->Next()) {
-      Bytes key_bytes(it->key().data(), it->key().data() + it->key().size());
-      Bytes value_bytes(it->value().data(), it->value().data() + it->value().size());
-      func(key_bytes, value_bytes);
-    }
-    assert(it->status().ok()); // Check for any errors found during the scan
-    delete it;
-  }
+//   void iterate_all(function<void(Bytes &, Bytes&)> func) {
+//     rocksdb::Iterator* it = db->NewIterator(rocksdb::ReadOptions());
+//     for (it->SeekToFirst(); it->Valid(); it->Next()) {
+//       Bytes key_bytes(it->key().data(), it->key().data() + it->key().size());
+//       Bytes value_bytes(it->value().data(), it->value().data() + it->value().size());
+//       func(key_bytes, value_bytes);
+//     }
+//     assert(it->status().ok()); // Check for any errors found during the scan
+//     delete it;
+//   }
 
-  rocksdb::DB *db = nullptr;
+//   rocksdb::DB *db = nullptr;
 
-  rocksdb::WriteOptions writeOptions;
-  rocksdb::ReadOptions readOptions;
-};
+//   rocksdb::WriteOptions writeOptions;
+//   rocksdb::ReadOptions readOptions;
+//   rocksdb::ReadOptions quickReadOptions;
+// };
 
 struct MDB_DB : public DB {
   MDB_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) : DB(db_path_, read_only_) {
@@ -440,12 +459,158 @@ struct MDB_DB : public DB {
   }
 };
 
+vector<char> HEX_TABLE = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+
+struct Dir_DB : public DB {
+  Dir_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes) : DB(db_path_, read_only_) {
+    std::cerr << "opening database: " << db_path << std::endl;
+    db_gfile = g_file_new_for_path(db_path.c_str());
+
+    print("Checking existence of ", db_path);
+    if (!g_file_query_exists(db_gfile, nullptr)) {
+      if (read_only == ReadOnly::Yes)
+        throw StringException("DB doesn't exist, Can't create new dir in readonly mode");
+      if (!g_file_make_directory(db_gfile, nullptr, nullptr))
+        throw StringException("Can't create new dir, something blocking");
+    }
+  }
+
+  //classic byte pointer put function
+  virtual bool put(uint8_t *key, uint8_t *data, uint64_t key_len, uint64_t data_len, Overwrite overwrite) {
+    if (read_only == ReadOnly::Yes)
+      throw StringException("Not allowed to store, Read Only!");
+
+    std::vector<uint8_t> key_vec(key, key + key_len);
+    string key_str = to_hex(key_vec);
+    auto splitted_key = split_key(key_str);
+
+    //check and create dir path
+    auto dir_path = db_path + "/" + splitted_key.first;
+    auto dir_gfile = g_file_new_for_path(dir_path.c_str());
+    if (!g_file_query_exists(dir_gfile, nullptr))
+      if (!g_file_make_directory(dir_gfile, nullptr, nullptr))
+        throw StringException("Can't create new dir, something blocking");
+
+    // check value path and see if it exists
+    auto value_path = dir_path + "/" + splitted_key.second;
+    auto value_gfile = g_file_new_for_path(value_path.c_str());
+
+    if (overwrite == NOOVERWRITE) {
+      if (g_file_query_exists(value_gfile, nullptr)) {
+        auto file_info = g_file_query_info(value_gfile, G_FILE_ATTRIBUTE_STANDARD_SIZE, G_FILE_QUERY_INFO_NONE, nullptr, nullptr);
+        auto file_size = g_file_info_get_size(file_info);
+        g_object_unref(file_info);
+  
+        if (file_size == data_len) {//if true we assume its written
+          print("Skipping file ", key_str);
+          g_object_unref(dir_gfile);
+          g_object_unref(value_gfile);
+          return false;
+        }
+      }
+    }
+ 
+    ofstream of(value_path, std::ofstream::binary);
+    if (!of) {
+      cerr << "failed opening " << value_path << " for writing" << endl;
+      throw StringException("Output File Creation Failed");
+    }
+
+    if (!of.write((char*)data, data_len)) {
+      cerr << "failed writing to " << value_path << endl;
+      throw StringException("Output File Writing Failed");
+    }
+
+    g_object_unref(dir_gfile);
+    g_object_unref(value_gfile);
+  }
+
+  virtual PBytes get(uint8_t *ptr, uint64_t len) {
+    std::vector<uint8_t> key(ptr, ptr + len);
+    string key_str = to_hex(key);
+    auto splitted_key = split_key(key_str);
+    auto dir_path = db_path + "/" + splitted_key.first;
+    auto value_path = dir_path + "/" + splitted_key.second;
+
+    ifstream in_file(value_path, std::ifstream::binary);
+
+    if (!in_file) {
+      print("Couldn't find key");
+      return nullptr;
+    }
+
+    in_file.seekg (0, in_file.end);
+    auto length = in_file.tellg();
+    in_file.seekg (0, in_file.beg);
+
+    auto bytes = make_unique<Bytes>(length);
+
+    if (!in_file.read((char*)bytes->data(), bytes->size()))
+      throw StringException("Reading failed");
+
+    return bytes;
+  }
+
+  virtual bool has(std::vector<uint8_t> &key) {
+    std::string key_str = to_hex(key);
+    auto splitted_key = split_key(key_str);
+    auto dir_path = db_path + "/" + splitted_key.first;
+    auto value_path = dir_path + "/" + splitted_key.second;
+
+    GFile *file = g_file_new_for_path(value_path.c_str());
+    bool exists = g_file_query_exists(file, nullptr);
+    g_object_unref(file);
+    return exists;
+  }
+
+  virtual void copy_db(std::string path) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  virtual void print_stat() {
+    throw std::runtime_error("Not implemented");
+  }
+
+
+  virtual void check_all() {
+    throw std::runtime_error("Not implemented");    
+  }
+
+
+  virtual void iterate_all(function<void(Bytes &, Bytes&)> func) {
+    throw std::runtime_error("Not implemented");
+  }
+
+  std::pair<string, string> split_key(string key) {
+    if (key.size() < 2) {
+      throw StringException("Key too short");
+    }
+    return std::pair<string, string>(key.substr(0, 2), key.substr(2));
+  }
+
+  string to_hex(std::vector<uint8_t> &key) {
+    std::ostringstream stream;
+    for (auto &k : key) {
+      stream << HEX_TABLE[k / 16];  
+      stream << HEX_TABLE[k % 16];
+    }
+    return stream.str();
+  }
+
+  GFile *db_gfile = nullptr;
+};
+
 std::unique_ptr<DB> load_db(string path, ReadOnly readonly) {
   /// if ends with .rocksdb we assume its rocksdb, otherwise lmdb
-  if (path.size() < 8 || path.substr(path.size() - 8) == ".rocksdb")
-    return std::make_unique<Rocks_DB>(path, readonly);
-  else
+  // if (path.size() < 8 || path.substr(path.size() - 8) == ".rocksdb")
+  //   return std::make_unique<Rocks_DB>(path, readonly);
+  //else 
+  if (path.size() < 3 || path.substr(path.size() - 3) == ".db")
     return std::make_unique<MDB_DB>(path, readonly);
+  else if (path.size() < 6 || path.substr(path.size() - 6) == ".dirdb")
+    return std::make_unique<Dir_DB>(path, readonly);
+  else
+    throw StringException("Failed to load db, no valid path ending");
 }
 
 struct Entry {
