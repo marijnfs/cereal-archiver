@@ -774,7 +774,7 @@ string timestring(uint64_t timestamp) {
 
 unique_ptr<DB> db;
 
-Entry enumerate(GFile *root, GFile *path) {
+Entry enumerate(GFile *root, GFile *path, bool ignore_hidden = false) {
   GFileEnumerator *enumerator;
   GError *error = NULL;
 
@@ -788,7 +788,7 @@ Entry enumerate(GFile *root, GFile *path) {
   Dir dir;
   uint64_t total_size(0);
   
-  while (TRUE) {
+  while (true) {
     GFile *child;
     GFileInfo *finfo;
     char *relative_path;
@@ -809,7 +809,10 @@ Entry enumerate(GFile *root, GFile *path) {
     GTimeVal gtime;
     g_file_info_get_modification_time (finfo, &gtime);
     uint64_t timestamp = gtime.tv_sec;
-
+    
+    if (ignore_hidden && relative_path[0] == '~')
+        continue;
+    
     //skip special files, like sockets
     if (file_type == G_FILE_TYPE_SPECIAL) {
       cerr << "SKIPPING SPECIAL FILE: " << base_name << endl;
@@ -1076,10 +1079,10 @@ void output_file(string path, string target_path) {
   }
 }
 
-void backup(GFile *path, string backup_name, string backup_description) {
+void backup(GFile *path, string backup_name, string backup_description, bool ignore_hidden) {
   Backup backup{VERSION, backup_name, backup_description};
   {
-    auto entry = enumerate(path, path);
+    auto entry = enumerate(path, path, ignore_hidden);
     // auto entry_hash = db->store(entry);
     // backup.entry_hash = *entry_hash;
     backup.entry = entry;
@@ -1425,6 +1428,7 @@ int main(int argc, char **argv) {
   args::ValueFlag<string> arch_name(archive_command, "name", "Name for this directory in the archive", {"name"}, args::Options::Required);
   args::ValueFlag<string> arch_path(archive_command, "path", "Path to directory", {"path"}, args::Options::Required);
   args::ValueFlag<string> arch_description(archive_command, "description", "archive description", {"description"});
+  args::ValueFlag<bool> arch_ignore_hidden(archive_command, "ignore_hidden", "Ignore hidden files (starting with .)", {"ignore_hidden"}, false);
 
   args::Command stat_command(commands, "stat", "print db stats");
   args::Command list_command(commands, "list", "list backups");
@@ -1482,7 +1486,7 @@ int main(int argc, char **argv) {
   if (archive_command) {
     auto arch_path_str = args::get(arch_path);
     GFile *file = g_file_new_for_path(arch_path_str.c_str());
-    backup(file, args::get(arch_name), args::get(arch_description));
+    backup(file, args::get(arch_name), args::get(arch_description), args::get(arch_ignore_hidden));
   } else if (stat_command) {
     db->print_stat();
   } else if (list_command) {
