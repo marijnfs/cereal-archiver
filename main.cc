@@ -810,9 +810,13 @@ Entry enumerate(GFile *root, GFile *path, bool ignore_hidden = false) {
     g_file_info_get_modification_time (finfo, &gtime);
     uint64_t timestamp = gtime.tv_sec;
     
-    if (ignore_hidden && relative_path[0] == '~')
+    if (ignore_hidden && relative_path[0] == '.') {
+        g_free(relative_path);
+        g_free(base_name);
+        g_free(full_path);
         continue;
-    
+        
+    }
     //skip special files, like sockets
     if (file_type == G_FILE_TYPE_SPECIAL) {
       cerr << "SKIPPING SPECIAL FILE: " << base_name << endl;
