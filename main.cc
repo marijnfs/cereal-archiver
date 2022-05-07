@@ -1780,12 +1780,12 @@ main(int argc, char** argv)
                                            args::Options::Required);
 
   args::Command serve_command(
-    commands, "serve", "record changes to the repository");
+    commands, "serve", "Serve files so they can be browsed from a browser");
   args::ValueFlag<string> port(
     serve_command, "port", "port of server", { "port" }, "9090");
 
-  args::Command fix_command(
-    commands, "fix", "record changes to the repository");
+  // args::Command fix_command(
+    // commands, "fix", "record changes to the repository");
 
   args::Command export_images_command(
     commands, "export_images", "export all jpeg and png files to a directory");
@@ -1849,8 +1849,8 @@ main(int argc, char** argv)
     join(args::get(source_db));
   } else if (serve_command) {
     serve(args::get(port));
-  } else if (fix_command) {
-    fix();
+  // } else if (fix_command) {
+    // fix();
   } else if (export_images_command) {
     export_images(args::get(export_images_path), args::get(min_size));
   } else {
