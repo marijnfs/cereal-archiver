@@ -1,3 +1,11 @@
+#include <lmdb.h>
+
+#include <cereal/archives/binary.hpp>
+#include <cereal/archives/json.hpp>
+#include <cereal/archives/portable_binary.hpp>
+#include <cereal/types/memory.hpp>
+#include <cereal/types/unordered_map.hpp>
+#include <cereal/types/vector.hpp>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -6,24 +14,15 @@
 #include <string>
 #include <vector>
 
-#include <lmdb.h>
-#include <cereal/archives/binary.hpp>
-#include <cereal/archives/json.hpp>
-#include <cereal/archives/portable_binary.hpp>
-#include <cereal/types/memory.hpp>
-#include <cereal/types/unordered_map.hpp>
-#include <cereal/types/vector.hpp>
-
 // #include <rocksdb/db.h>
 // #include <rocksdb/slice.h>
 // #include <rocksdb/options.h>
-
-#include "blake2.h"
 
 #include <glib-2.0/gio/gio.h>
 #include <glib.h>
 
 #include "args.hxx"
+#include "blake2.h"
 #include "bytes.h"
 #include "server/mime_types.hpp"
 #include "server/server.hpp"
@@ -35,31 +34,55 @@ uint8_t blakekey[BLAKE2B_KEYBYTES];
 uint64_t VERSION(1);
 bool old_load(false);
 
-enum class ReadOnly { No = 0, Yes = 1 };
+enum class ReadOnly
+{
+  No = 0,
+  Yes = 1
+};
 
-enum class BlobType { NONE, ROOT, BACKUP, DIRECTORY, ENTRY, MULTIPART };
+enum class BlobType
+{
+  NONE,
+  ROOT,
+  BACKUP,
+  DIRECTORY,
+  ENTRY,
+  MULTIPART
+};
 
-enum class EntryType { SINGLEFILE, DIRECTORY, MULTIFILE };
+enum class EntryType
+{
+  SINGLEFILE,
+  DIRECTORY,
+  MULTIFILE
+};
 
 using namespace std;
 
-void init_blakekey() {
+void
+init_blakekey()
+{
   for (size_t i = 0; i < BLAKE2B_KEYBYTES; ++i)
     blakekey[i] = (uint8_t)i;
 }
 
-struct StringException : public std::exception {
+struct StringException : public std::exception
+{
   std::string str;
-  StringException(std::string msg_) : str(msg_) {}
+  StringException(std::string msg_)
+    : str(msg_)
+  {}
 
   const char* what() const noexcept { return str.c_str(); }
 };
 
-std::string user_readable_size(uint64_t size_) {
+std::string
+user_readable_size(uint64_t size_)
+{
   double size(size_);
   std::ostringstream oss;
   oss << std::fixed << std::setprecision(2);
-  for (auto str : std::vector<std::string>{"B", "KB", "MB", "GB", "TB"}) {
+  for (auto str : std::vector<std::string>{ "B", "KB", "MB", "GB", "TB" }) {
     if (size < 1024.) {
       oss << size << str;
       return oss.str();
@@ -72,7 +95,9 @@ std::string user_readable_size(uint64_t size_) {
 
 string DBNAME = "archiver.db";
 
-PBytes get_hash(uint8_t* data, uint64_t len) {
+PBytes
+get_hash(uint8_t* data, uint64_t len)
+{
   auto hash = make_unique<Bytes>(HASH_BYTES);
   // Old Blake2b API
   // if (blake2b(hash->data(), data, blakekey, HASH_BYTES, len,
@@ -83,30 +108,42 @@ PBytes get_hash(uint8_t* data, uint64_t len) {
   return move(hash);
 }
 
-PBytes get_hash(Bytes& bytes) {
+PBytes
+get_hash(Bytes& bytes)
+{
   return get_hash((uint8_t*)bytes.data(), bytes.size());
 }
 
-enum Overwrite { OVERWRITE = 0, NOOVERWRITE = 1 };
+enum Overwrite
+{
+  OVERWRITE = 0,
+  NOOVERWRITE = 1
+};
 
-struct DB {
+struct DB
+{
   DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes)
-      : db_path(db_path_), read_only(read_only_) {}
+    : db_path(db_path_)
+    , read_only(read_only_)
+  {}
 
-  bool put(Bytes& data) {
+  bool put(Bytes& data)
+  {
     auto hash = get_hash(data);
     return put(*hash, data, NOOVERWRITE);
   }
 
   // put function for vector types
-  bool put(Bytes& key, Bytes& data, Overwrite overwrite) {
+  bool put(Bytes& key, Bytes& data, Overwrite overwrite)
+  {
     return put(key.data(), data.data(), key.size(), data.size(), overwrite);
   }
 
   PBytes get(std::vector<uint8_t>& key) { return get(key.data(), key.size()); }
 
-  template <typename T>
-  PBytes store(T& value) {
+  template<typename T>
+  PBytes store(T& value)
+  {
     if (read_only == ReadOnly::Yes)
       throw StringException("Not allowed to store, Read Only!");
     ostringstream oss;
@@ -117,14 +154,15 @@ struct DB {
     }
     auto contiguous_buf = oss.str();
     auto data =
-        make_unique<Bytes>(contiguous_buf.begin(), contiguous_buf.end());
+      make_unique<Bytes>(contiguous_buf.begin(), contiguous_buf.end());
     auto key = get_hash(*data);
     this->put(*key, *data, NOOVERWRITE);
     return move(key);
   }
 
-  template <typename T>
-  unique_ptr<T> load(Bytes& key) {
+  template<typename T>
+  unique_ptr<T> load(Bytes& key)
+  {
     auto data = get(key);
     if (!data)
       return nullptr;
@@ -146,19 +184,23 @@ struct DB {
                    uint8_t* data,
                    uint64_t key_len,
                    uint64_t data_len,
-                   Overwrite overwrite) {
+                   Overwrite overwrite)
+  {
     throw std::runtime_error("Not implemented");
   }
 
-  virtual PBytes get(uint8_t* ptr, uint64_t len) {
+  virtual PBytes get(uint8_t* ptr, uint64_t len)
+  {
     throw std::runtime_error("Not implemented");
   }
 
-  virtual bool has(std::vector<uint8_t>& key) {
+  virtual bool has(std::vector<uint8_t>& key)
+  {
     throw std::runtime_error("Not implemented");
   }
 
-  virtual void copy_db(std::string path) {
+  virtual void copy_db(std::string path)
+  {
     throw std::runtime_error("Not implemented");
   }
 
@@ -166,7 +208,8 @@ struct DB {
 
   virtual void check_all() { throw std::runtime_error("Not implemented"); }
 
-  virtual void iterate_all(function<void(Bytes&, Bytes&)> func) {
+  virtual void iterate_all(function<void(Bytes&, Bytes&)> func)
+  {
     throw std::runtime_error("Not implemented");
   }
 
@@ -272,29 +315,33 @@ struct DB {
 //   rocksdb::ReadOptions quickReadOptions;
 // };
 
-struct MDB_DB : public DB {
+struct MDB_DB : public DB
+{
   MDB_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes)
-      : DB(db_path_, read_only_) {
+    : DB(db_path_, read_only_)
+  {
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     // c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
-    c(mdb_env_set_mapsize(env, size_t(840) << 30));  // One TB
+    c(mdb_env_set_mapsize(env, size_t(840) << 30)); // One TB
     // c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
-    c(mdb_env_open(env, db_path.c_str(),
+    c(mdb_env_open(env,
+                   db_path.c_str(),
                    (read_only == ReadOnly::No
-                        ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC)
-                        : (MDB_NOSUBDIR | MDB_RDONLY)),
+                      ? (MDB_NOSUBDIR | MDB_WRITEMAP | MDB_MAPASYNC)
+                      : (MDB_NOSUBDIR | MDB_RDONLY)),
                    read_only == ReadOnly::No ? 0664 : 0444));
     // c(mdb_env_open(env, db_path.c_str(), (!read_only ? (MDB_NOSUBDIR |
     // MDB_WRITEMAP) : (MDB_NOSUBDIR | MDB_RDONLY)), !read_only ? 0664 : 0444));
 
-    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0,
-                    &txn));
+    c(mdb_txn_begin(
+      env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     c(mdb_dbi_open(txn, NULL, MDB_CREATE, &dbi));
     c(mdb_txn_commit(txn));
   }
 
-  ~MDB_DB() {
+  ~MDB_DB()
+  {
     mdb_env_sync(env, 1);
     mdb_dbi_close(env, dbi);
   }
@@ -304,15 +351,19 @@ struct MDB_DB : public DB {
            uint8_t* data,
            uint64_t key_len,
            uint64_t data_len,
-           Overwrite overwrite) {
+           Overwrite overwrite)
+  {
     if (read_only == ReadOnly::Yes)
       throw StringException("Not allowed to store, Read Only!");
 
-    MDB_val mkey{key_len, key}, mdata{data_len, data};
+    MDB_val mkey{ key_len, key }, mdata{ data_len, data };
 
-    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0,
-                    &txn));
-    int result = mdb_put(txn, dbi, &mkey, &mdata,
+    c(mdb_txn_begin(
+      env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
+    int result = mdb_put(txn,
+                         dbi,
+                         &mkey,
+                         &mdata,
                          (overwrite == NOOVERWRITE) ? MDB_NOOVERWRITE : 0);
     if (result == MDB_KEYEXIST) {
       c(mdb_txn_commit(txn));
@@ -324,11 +375,12 @@ struct MDB_DB : public DB {
     return true;
   }
 
-  PBytes get(uint8_t* ptr, uint64_t len) {
-    MDB_val mkey{len, ptr};
+  PBytes get(uint8_t* ptr, uint64_t len)
+  {
+    MDB_val mkey{ len, ptr };
     MDB_val mdata;
-    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0,
-                    &txn));
+    c(mdb_txn_begin(
+      env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
 
     if (result == MDB_NOTFOUND) {
@@ -338,30 +390,33 @@ struct MDB_DB : public DB {
     c(result);
 
     auto ret_val = make_unique<Bytes>(
-        reinterpret_cast<uint8_t*>(mdata.mv_data),
-        reinterpret_cast<uint8_t*>(mdata.mv_data) + mdata.mv_size);
+      reinterpret_cast<uint8_t*>(mdata.mv_data),
+      reinterpret_cast<uint8_t*>(mdata.mv_data) + mdata.mv_size);
     c(mdb_txn_commit(txn));
     return ret_val;
   }
 
-  bool has(std::vector<uint8_t>& key) {
-    MDB_val mkey{key.size(), &key[0]};
+  bool has(std::vector<uint8_t>& key)
+  {
+    MDB_val mkey{ key.size(), &key[0] };
     MDB_val mdata;
-    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0,
-                    &txn));
+    c(mdb_txn_begin(
+      env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     int result = mdb_get(txn, dbi, &mkey, &mdata);
     c(mdb_txn_commit(txn));
     return result != MDB_NOTFOUND;
   }
 
-  void copy_db(std::string path) {
+  void copy_db(std::string path)
+  {
     c(mdb_env_copy2(env, path.c_str(), MDB_CP_COMPACT));
   }
 
-  void print_stat() {
+  void print_stat()
+  {
     MDB_stat stat;
-    c(mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0,
-                    &txn));
+    c(mdb_txn_begin(
+      env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     mdb_stat(txn, dbi, &stat);
     auto db_size = stat.ms_psize * (stat.ms_leaf_pages + stat.ms_branch_pages +
                                     stat.ms_overflow_pages);
@@ -376,7 +431,8 @@ struct MDB_DB : public DB {
     printf("  Entries: %zu\n", stat.ms_entries);
   }
 
-  void iterate_all(function<void(Bytes&, Bytes&)> func) {
+  void iterate_all(function<void(Bytes&, Bytes&)> func)
+  {
     MDB_cursor* cursor;
     mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
@@ -399,7 +455,8 @@ struct MDB_DB : public DB {
     mdb_cursor_close(cursor);
   }
 
-  void check_all() {
+  void check_all()
+  {
     MDB_cursor* cursor;
     mdb_txn_begin(env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn);
     c(mdb_cursor_open(txn, dbi, &cursor));
@@ -435,7 +492,8 @@ struct MDB_DB : public DB {
   MDB_txn* txn = 0;
 
   // check function
-  void c(int rc) {
+  void c(int rc)
+  {
     if (rc != 0) {
       fprintf(stderr, "txn->commit: (%d) %s\n", rc, mdb_strerror(rc));
       throw StringException("db error");
@@ -443,12 +501,14 @@ struct MDB_DB : public DB {
   }
 };
 
-vector<char> HEX_TABLE = {'0', '1', '2', '3', '4', '5', '6', '7',
-                          '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+vector<char> HEX_TABLE = { '0', '1', '2', '3', '4', '5', '6', '7',
+                           '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
 
-struct Dir_DB : public DB {
+struct Dir_DB : public DB
+{
   Dir_DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes)
-      : DB(db_path_, read_only_) {
+    : DB(db_path_, read_only_)
+  {
     std::cerr << "opening database: " << db_path << std::endl;
     db_gfile = g_file_new_for_path(db_path.c_str());
 
@@ -456,7 +516,7 @@ struct Dir_DB : public DB {
     if (!g_file_query_exists(db_gfile, nullptr)) {
       if (read_only == ReadOnly::Yes)
         throw StringException(
-            "DB doesn't exist, Can't create new dir in readonly mode");
+          "DB doesn't exist, Can't create new dir in readonly mode");
       if (!g_file_make_directory(db_gfile, nullptr, nullptr))
         throw StringException("Can't create new dir, something blocking");
     }
@@ -467,7 +527,8 @@ struct Dir_DB : public DB {
                    uint8_t* data,
                    uint64_t key_len,
                    uint64_t data_len,
-                   Overwrite overwrite) {
+                   Overwrite overwrite)
+  {
     if (read_only == ReadOnly::Yes)
       throw StringException("Not allowed to store, Read Only!");
 
@@ -488,13 +549,15 @@ struct Dir_DB : public DB {
 
     if (overwrite == NOOVERWRITE) {
       if (g_file_query_exists(value_gfile, nullptr)) {
-        auto file_info =
-            g_file_query_info(value_gfile, G_FILE_ATTRIBUTE_STANDARD_SIZE,
-                              G_FILE_QUERY_INFO_NONE, nullptr, nullptr);
+        auto file_info = g_file_query_info(value_gfile,
+                                           G_FILE_ATTRIBUTE_STANDARD_SIZE,
+                                           G_FILE_QUERY_INFO_NONE,
+                                           nullptr,
+                                           nullptr);
         auto file_size = g_file_info_get_size(file_info);
         g_object_unref(file_info);
 
-        if (file_size == data_len) {  // if true we assume its written
+        if (file_size == data_len) { // if true we assume its written
           print("Skipping file ", key_str);
           g_object_unref(dir_gfile);
           g_object_unref(value_gfile);
@@ -519,7 +582,8 @@ struct Dir_DB : public DB {
     return true;
   }
 
-  virtual PBytes get(uint8_t* ptr, uint64_t len) {
+  virtual PBytes get(uint8_t* ptr, uint64_t len)
+  {
     std::vector<uint8_t> key(ptr, ptr + len);
     string key_str = to_hex(key);
     auto splitted_key = split_key(key_str);
@@ -545,7 +609,8 @@ struct Dir_DB : public DB {
     return bytes;
   }
 
-  virtual bool has(std::vector<uint8_t>& key) {
+  virtual bool has(std::vector<uint8_t>& key)
+  {
     std::string key_str = to_hex(key);
     auto splitted_key = split_key(key_str);
     auto dir_path = db_path + "/" + splitted_key.first;
@@ -557,7 +622,8 @@ struct Dir_DB : public DB {
     return exists;
   }
 
-  virtual void copy_db(std::string path) {
+  virtual void copy_db(std::string path)
+  {
     throw std::runtime_error("Not implemented");
   }
 
@@ -565,18 +631,21 @@ struct Dir_DB : public DB {
 
   virtual void check_all() { throw std::runtime_error("Not implemented"); }
 
-  virtual void iterate_all(function<void(Bytes&, Bytes&)> func) {
+  virtual void iterate_all(function<void(Bytes&, Bytes&)> func)
+  {
     throw std::runtime_error("Not implemented");
   }
 
-  std::pair<string, string> split_key(string key) {
+  std::pair<string, string> split_key(string key)
+  {
     if (key.size() < 2) {
       throw StringException("Key too short");
     }
     return std::pair<string, string>(key.substr(0, 2), key.substr(2));
   }
 
-  string to_hex(std::vector<uint8_t>& key) {
+  string to_hex(std::vector<uint8_t>& key)
+  {
     std::ostringstream stream;
     for (auto& k : key) {
       stream << HEX_TABLE[k / 16];
@@ -588,7 +657,9 @@ struct Dir_DB : public DB {
   GFile* db_gfile = nullptr;
 };
 
-std::unique_ptr<DB> load_db(string path, ReadOnly readonly) {
+std::unique_ptr<DB>
+load_db(string path, ReadOnly readonly)
+{
   /// if ends with .rocksdb we assume its rocksdb, otherwise lmdb
   // if (path.size() < 8 || path.substr(path.size() - 8) == ".rocksdb")
   //   return std::make_unique<Rocks_DB>(path, readonly);
@@ -601,7 +672,8 @@ std::unique_ptr<DB> load_db(string path, ReadOnly readonly) {
     throw StringException("Failed to load db, no valid path ending");
 }
 
-struct Entry {
+struct Entry
+{
   uint64_t version = VERSION;
 
   string name;
@@ -613,8 +685,9 @@ struct Entry {
   bool active = true;
   string content_type;
 
-  template <class Archive>
-  void load(Archive& ar) {
+  template<class Archive>
+  void load(Archive& ar)
+  {
     if (old_load)
       ar(name, hash, type, size, timestamp, access, active);
     else {
@@ -624,27 +697,45 @@ struct Entry {
       if (btype != (int64_t)BlobType::ENTRY)
         throw StringException("decerealisation: Not an Entry type");
       int64_t type64(0);
-      ar(version, name, hash, type64, size, timestamp, access, active,
+      ar(version,
+         name,
+         hash,
+         type64,
+         size,
+         timestamp,
+         access,
+         active,
          content_type);
       type = EntryType(type64);
     }
   }
 
-  template <class Archive>
-  void save(Archive& ar) const {
+  template<class Archive>
+  void save(Archive& ar) const
+  {
     // ar(name, hash, type, size, timestamp, access, active);
 
-    ar(int64_t(BlobType::ENTRY), version, name, hash, int64_t(type), size,
-       timestamp, access, active, content_type);
+    ar(int64_t(BlobType::ENTRY),
+       version,
+       name,
+       hash,
+       int64_t(type),
+       size,
+       timestamp,
+       access,
+       active,
+       content_type);
   }
 };
 
-struct MultiPart {
+struct MultiPart
+{
   uint64_t version = VERSION;
   vector<Bytes> hashes;
 
-  template <class Archive>
-  void load(Archive& ar) {
+  template<class Archive>
+  void load(Archive& ar)
+  {
     if (old_load)
       ar(hashes);
     else {
@@ -657,20 +748,23 @@ struct MultiPart {
     }
   }
 
-  template <class Archive>
-  void save(Archive& ar) const {
+  template<class Archive>
+  void save(Archive& ar) const
+  {
     // ar(hashes);
 
     ar(int64_t(BlobType::MULTIPART), version, hashes);
   }
 };
 
-struct Dir {
+struct Dir
+{
   uint64_t version = VERSION;
   vector<Entry> entries;
 
-  template <class Archive>
-  void load(Archive& ar) {
+  template<class Archive>
+  void load(Archive& ar)
+  {
     if (old_load)
       ar(entries);
     else {
@@ -683,22 +777,25 @@ struct Dir {
     }
   }
 
-  template <class Archive>
-  void save(Archive& ar) const {
+  template<class Archive>
+  void save(Archive& ar) const
+  {
     // ar(entries);
 
     ar(int64_t(BlobType::DIRECTORY), version, entries);
   }
 };
 
-struct Root {
+struct Root
+{
   uint64_t version = VERSION;
   vector<Bytes> backups;
   Bytes last_root;
   uint64_t timestamp;
 
-  template <class Archive>
-  void load(Archive& ar) {
+  template<class Archive>
+  void load(Archive& ar)
+  {
     if (old_load)
       ar(backups, last_root, timestamp);
     else {
@@ -712,15 +809,17 @@ struct Root {
     }
   }
 
-  template <class Archive>
-  void save(Archive& ar) const {
+  template<class Archive>
+  void save(Archive& ar) const
+  {
     // ar(backups, last_root, timestamp);
 
     ar(int64_t(BlobType::ROOT), version, backups, last_root, timestamp);
   }
 };
 
-struct Backup {
+struct Backup
+{
   uint64_t version = VERSION;
   string name;
   string description;
@@ -732,8 +831,9 @@ struct Backup {
 
   uint64_t timestamp = 0;
 
-  template <class Archive>
-  void load(Archive& ar) {
+  template<class Archive>
+  void load(Archive& ar)
+  {
     if (old_load)
       ar(name, description, size, entry_hash, timestamp);
     else {
@@ -746,16 +846,24 @@ struct Backup {
     }
   }
 
-  template <class Archive>
-  void save(Archive& ar) const {
+  template<class Archive>
+  void save(Archive& ar) const
+  {
     // ar(name, description, size, entry_hash, timestamp);
 
-    ar(int64_t(BlobType::BACKUP), version, name, description, size, entry,
+    ar(int64_t(BlobType::BACKUP),
+       version,
+       name,
+       description,
+       size,
+       entry,
        timestamp);
   }
 };
 
-string timestring(uint64_t timestamp) {
+string
+timestring(uint64_t timestamp)
+{
   std::tm* ptm = std::localtime((time_t*)&timestamp);
   char buffer[64];
   // Format: Mo, 15.06.2009 20:20:00
@@ -765,12 +873,14 @@ string timestring(uint64_t timestamp) {
 
 unique_ptr<DB> db;
 
-Entry enumerate(GFile* root, GFile* path, bool ignore_hidden = false) {
+Entry
+enumerate(GFile* root, GFile* path, bool ignore_hidden = false)
+{
   GFileEnumerator* enumerator;
   GError* error = NULL;
 
   enumerator = g_file_enumerate_children(
-      path, "*", G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, &error);
+    path, "*", G_FILE_QUERY_INFO_NOFOLLOW_SYMLINKS, NULL, &error);
   if (error != NULL) {
     cerr << error->message << endl;
     return Entry{};
@@ -831,7 +941,7 @@ Entry enumerate(GFile* root, GFile* path, bool ignore_hidden = false) {
       cerr << filesize << " " << relative_path << endl;
 
       if (MAX_FILESIZE &&
-          filesize > MAX_FILESIZE) {  // on first pass ignore huge files
+          filesize > MAX_FILESIZE) { // on first pass ignore huge files
         cerr << "skipping: " << relative_path << " " << filesize << endl;
         continue;
       }
@@ -853,9 +963,15 @@ Entry enumerate(GFile* root, GFile* path, bool ignore_hidden = false) {
         bool active = true;
 
         g_free(data);
-        dir.entries.push_back(Entry{VERSION, base_name, *hash,
-                                    EntryType::SINGLEFILE, len, timestamp,
-                                    access, active, content_type});
+        dir.entries.push_back(Entry{ VERSION,
+                                     base_name,
+                                     *hash,
+                                     EntryType::SINGLEFILE,
+                                     len,
+                                     timestamp,
+                                     access,
+                                     active,
+                                     content_type });
         total_size += len;
       } else {
         // Too big for direct storage, Multipart file
@@ -867,9 +983,11 @@ Entry enumerate(GFile* root, GFile* path, bool ignore_hidden = false) {
         MultiPart multipart;
         gsize len(0);
         while (true) {
-          gsize bytes_read =
-              g_input_stream_read(G_INPUT_STREAM(input_stream), (void*)&data[0],
-                                  MULTIPART_SIZE, NULL, &error);
+          gsize bytes_read = g_input_stream_read(G_INPUT_STREAM(input_stream),
+                                                 (void*)&data[0],
+                                                 MULTIPART_SIZE,
+                                                 NULL,
+                                                 &error);
           if (error != NULL)
             throw StringException(error->message);
 
@@ -880,16 +998,25 @@ Entry enumerate(GFile* root, GFile* path, bool ignore_hidden = false) {
           auto hash = get_hash((uint8_t*)&data[0], bytes_read);
           multipart.hashes.push_back(*hash);
 
-          db->put(hash->data(), (uint8_t*)&data[0], hash->size(), bytes_read,
-                  NOOVERWRITE);  // store part in database
+          db->put(hash->data(),
+                  (uint8_t*)&data[0],
+                  hash->size(),
+                  bytes_read,
+                  NOOVERWRITE); // store part in database
         }
         auto hash = db->store(multipart);
         uint64_t access = 0;
         bool active = true;
 
-        dir.entries.push_back(Entry{VERSION, base_name, *hash,
-                                    EntryType::MULTIFILE, len, timestamp,
-                                    access, active, content_type});
+        dir.entries.push_back(Entry{ VERSION,
+                                     base_name,
+                                     *hash,
+                                     EntryType::MULTIFILE,
+                                     len,
+                                     timestamp,
+                                     access,
+                                     active,
+                                     content_type });
 
         total_size += len;
       }
@@ -914,25 +1041,34 @@ Entry enumerate(GFile* root, GFile* path, bool ignore_hidden = false) {
   bool active = true;
   string content_type;
 
-  Entry dir_entry{VERSION,     base_name, *hash,  EntryType::DIRECTORY,
-                  total_size,  timestamp, access, active,
-                  content_type};
+  Entry dir_entry{ VERSION,     base_name, *hash,  EntryType::DIRECTORY,
+                   total_size,  timestamp, access, active,
+                   content_type };
   return dir_entry;
 }
 
-PBytes get_root_hash(DB& db) {
+PBytes
+get_root_hash(DB& db)
+{
   string root_str("ROOT");
   auto root_hash = db.get((uint8_t*)&root_str[0], root_str.size());
   return move(root_hash);
 }
 
-void save_root_hash(DB& db, Bytes hash) {
+void
+save_root_hash(DB& db, Bytes hash)
+{
   string root_str("ROOT");
-  db.put((uint8_t*)&root_str[0], hash.data(), root_str.size(), hash.size(),
+  db.put((uint8_t*)&root_str[0],
+         hash.data(),
+         root_str.size(),
+         hash.size(),
          OVERWRITE);
 }
 
-void join(string join_path) {
+void
+join(string join_path)
+{
   ofstream err_file("log.err", std::ofstream::app);
   std::unique_ptr<DB> other_db = load_db(join_path, ReadOnly::Yes);
 
@@ -949,8 +1085,8 @@ void join(string join_path) {
     for (auto backup_hash : root->backups)
       if (other_backup_hash == backup_hash)
         add = false;
-    if (add) {  // source backup is not present, so add it
-      root->backups.push_back(other_backup_hash);  // add it to root
+    if (add) { // source backup is not present, so add it
+      root->backups.push_back(other_backup_hash); // add it to root
 
       // now add all files
       auto src_backup = other_db->load<Backup>(other_backup_hash);
@@ -980,11 +1116,11 @@ void join(string join_path) {
           }
           if (entry.type == EntryType::MULTIFILE) {
             auto multipart = other_db->load<MultiPart>(entry.hash);
-            db->store(*multipart);  // store the multipart
+            db->store(*multipart); // store the multipart
 
             for (auto part_hash : multipart->hashes) {
               auto data = other_db->get(part_hash);
-              db->put(*data);  // store the data blobs
+              db->put(*data); // store the data blobs
             }
           }
           if (entry.type == EntryType::DIRECTORY) {
@@ -1000,7 +1136,9 @@ void join(string join_path) {
   save_root_hash(*db, *new_root_hash);
 }
 
-void output_file(string path, string target_path) {
+void
+output_file(string path, string target_path)
+{
   // extract the backup part
   auto backup_sep = path.find(":");
   if (backup_sep == string::npos) {
@@ -1077,11 +1215,13 @@ void output_file(string path, string target_path) {
   }
 }
 
-void backup(GFile* path,
-            string backup_name,
-            string backup_description,
-            bool ignore_hidden) {
-  Backup backup{VERSION, backup_name, backup_description};
+void
+backup(GFile* path,
+       string backup_name,
+       string backup_description,
+       bool ignore_hidden)
+{
+  Backup backup{ VERSION, backup_name, backup_description };
   {
     auto entry = enumerate(path, path, ignore_hidden);
     // auto entry_hash = db->store(entry);
@@ -1109,19 +1249,26 @@ void backup(GFile* path,
   save_root_hash(*db, *new_root_hash);
 }
 
-void list_backups() {
+void
+list_backups()
+{
   auto root_hash = get_root_hash(*db);
   auto root = db->load<Root>(*root_hash);
   print(timestring(root->timestamp));
 
   for (auto bhash : root->backups) {
     auto backup = db->load<Backup>(bhash);
-    print(backup->name, " ", backup->entry.hash, " ",
+    print(backup->name,
+          " ",
+          backup->entry.hash,
+          " ",
           user_readable_size(backup->size));
   }
 }
 
-void fix() {
+void
+fix()
+{
   throw StringException("Dangerous!");
   auto root_hash = get_root_hash(*db);
   print("root hash ", *root_hash);
@@ -1151,7 +1298,9 @@ void fix() {
   save_root_hash(*db, *new_root_hash);
 }
 
-void list_all_files() {
+void
+list_all_files()
+{
   auto root_hash = get_root_hash(*db);
   auto root = db->load<Root>(*root_hash);
   print(timestring(root->timestamp));
@@ -1190,8 +1339,8 @@ void list_all_files() {
 
       for (auto entry : cur_dir->entries) {
         if (entry.type != EntryType::DIRECTORY)
-          println(user_readable_size(entry.size), " ",
-                  cur_name + "/" + entry.name);
+          println(
+            user_readable_size(entry.size), " ", cur_name + "/" + entry.name);
         else {
           q.push(move(db->load<Dir>(entry.hash)));
           name_q.push(cur_name + "/" + entry.name);
@@ -1202,7 +1351,9 @@ void list_all_files() {
   }
 }
 
-unique_ptr<Entry> convert_entry(DB& target_db, Entry& entry) {
+unique_ptr<Entry>
+convert_entry(DB& target_db, Entry& entry)
+{
   print("convert ", entry.name);
   auto new_entry = make_unique<Entry>(entry);
   if (entry.hash.empty()) {
@@ -1236,7 +1387,9 @@ unique_ptr<Entry> convert_entry(DB& target_db, Entry& entry) {
   return new_entry;
 }
 
-void move_to(string target_db_path) {
+void
+move_to(string target_db_path)
+{
   if (!old_load)
     throw StringException("moveto is meant for old load");
   auto target_db = make_unique<DB>(target_db_path);
@@ -1265,11 +1418,14 @@ void move_to(string target_db_path) {
   save_root_hash(*target_db, *new_root_hash);
 }
 
-void serve(string port) {
+void
+serve(string port)
+{
   auto callback = [](const http::server::request& req,
                      http::server::reply& rep) {
     ostringstream output_buf;
     string content_type = "text/html";
+    rep.status = http::server::reply::ok;
 
     print("req uri: ", req.uri);
     auto slash_pos = req.uri.find('/');
@@ -1289,18 +1445,37 @@ void serve(string port) {
     cout << "req type: " << req_type << endl;
     if (req_type == "raw") {
       content_type = "text/plain";
+
       // Any slashes we find now encode the content-type, after the data hash
       slash_pos = req_string.find('/');
       if (slash_pos != string::npos) {
         content_type = req_string.substr(slash_pos + 1);
         req_string = req_string.substr(0, slash_pos);
       }
+
+      {
+        std::ostringstream oss;
+        oss << "Content-Disposition"; //; filename=
+        rep.headers.resize(4);
+        rep.headers[0].name = "Content-Type";
+        rep.headers[0].value = "application/octet-stream";
+        rep.headers[1].name = "Content-Disposition";
+        rep.headers[1].value = oss.str();
+        rep.headers[2].name = "Content-Description";
+        rep.headers[2].value = "File Transfer";
+      }
+
       Bytes search_hash;
       istringstream iss(req_string);
       iss >> search_hash;
+
       auto data = db->get(search_hash);
       print("serving n bytes: ", data->size(), " ", content_type);
+      rep.headers[3].name = "Content-Length";
+      rep.headers[3].value = std::to_string(data->size());
       output_buf.write((char*)data->data(), data->size());
+      rep.content = output_buf.str();
+      return;
     }
     if (req_type == "rawmulti") {
       content_type = "text/plain";
@@ -1377,18 +1552,18 @@ void serve(string port) {
               string entry_content_type = e.content_type;
               if (entry_content_type.empty())
                 entry_content_type =
-                    http::server::mime_types::extension_to_type(e.name);
+                  http::server::mime_types::extension_to_type(e.name);
               if (e.type == EntryType::DIRECTORY)
                 output_buf << "<li>D <a href=\"/" << e.hash << "\">" << e.name
                            << "</a> " << user_readable_size(e.size) << "</li>"
                            << endl;
               if (e.type == EntryType::SINGLEFILE)
                 output_buf << "<li><a href=\"/raw/" << e.hash << "/"
-                           << entry_content_type << "\">" << e.name << "</a> "
+                           << e.name << "\">" << e.name << "</a> "
                            << user_readable_size(e.size) << "</li>" << endl;
               if (e.type == EntryType::MULTIFILE)
                 output_buf << "<li><a href=\"/rawmulti/" << e.hash << "/"
-                           << entry_content_type << "\">" << e.name << "</a> "
+                           << e.name << "\">" << e.name << "</a> "
                            << user_readable_size(e.size) << "</li>" << endl;
             }
             output_buf << "</ul></body></html>";
@@ -1428,7 +1603,9 @@ void serve(string port) {
   server.run();
 }
 
-void export_images(std::string export_path, uint64_t min_size) {
+void
+export_images(std::string export_path, uint64_t min_size)
+{
   println("exporting images to ", export_path);
 
   std::set<Bytes> hash_map;
@@ -1478,14 +1655,14 @@ void export_images(std::string export_path, uint64_t min_size) {
         if (entry.type == EntryType::SINGLEFILE) {
           auto path = cur_name + "/" + entry.name;
           auto entry_content_type =
-              http::server::mime_types::extension_to_type(entry.name);
+            http::server::mime_types::extension_to_type(entry.name);
           if (entry_content_type == "image/jpeg" ||
               entry_content_type == "image/png") {
             // Check if image was already exported
 
             if (entry.size < min_size) {
               println("Skipping small file");
-              continue;              
+              continue;
             }
             if (hash_map.count(entry.hash)) {
               println("Skipping already encountered: ", path);
@@ -1503,8 +1680,8 @@ void export_images(std::string export_path, uint64_t min_size) {
 
             auto dir_gfile = g_file_get_parent(target_gfile);
             if (!g_file_query_exists(dir_gfile, nullptr))
-              if (!g_file_make_directory_with_parents(dir_gfile, nullptr,
-                                                      nullptr))
+              if (!g_file_make_directory_with_parents(
+                    dir_gfile, nullptr, nullptr))
                 throw std::runtime_error("Failed to create directory");
 
             // Output the file
@@ -1529,81 +1706,104 @@ void export_images(std::string export_path, uint64_t min_size) {
   }
 }
 
-int main(int argc, char** argv) {
+int
+main(int argc, char** argv)
+{
   cout << "Cereal Archiver" << endl;
   init_blakekey();
 
   // parse arguments
   args::ArgumentParser parser(
-      "Cereal Archiver - lmdb and cereal based archiver");
-  args::ValueFlag<string> db_path(parser, "db", "Path to DB", {"db"},
-                                  "archive.db");
-  args::ValueFlag<bool> read_only(parser, "read_only",
+    "Cereal Archiver - lmdb and cereal based archiver");
+  args::ValueFlag<string> db_path(
+    parser, "db", "Path to DB", { "db" }, "archive.db");
+  args::ValueFlag<bool> read_only(parser,
+                                  "read_only",
                                   "Create DB If not exists",
-                                  {"read_only", "ro"}, true);
+                                  { "read_only", "ro" },
+                                  true);
 
   args::Group commands(parser, "commands");
 
-  args::Command archive_command(commands, "archive",
-                                "archive a directory into the db");
-  args::ValueFlag<string> arch_name(archive_command, "name",
+  args::Command archive_command(
+    commands, "archive", "archive a directory into the db");
+  args::ValueFlag<string> arch_name(archive_command,
+                                    "name",
                                     "Name for this directory in the archive",
-                                    {"name"}, args::Options::Required);
-  args::ValueFlag<string> arch_path(archive_command, "path",
-                                    "Path to directory", {"path"},
+                                    { "name" },
+                                    args::Options::Required);
+  args::ValueFlag<string> arch_path(archive_command,
+                                    "path",
+                                    "Path to directory",
+                                    { "path" },
                                     args::Options::Required);
   args::ValueFlag<string> arch_description(
-      archive_command, "description", "archive description", {"description"});
+    archive_command, "description", "archive description", { "description" });
   args::ValueFlag<bool> arch_ignore_hidden(
-      archive_command, "ignore_hidden", "Ignore hidden files (starting with .)",
-      {"ignore_hidden"}, false);
+    archive_command,
+    "ignore_hidden",
+    "Ignore hidden files (starting with .)",
+    { "ignore_hidden" },
+    false);
 
   args::Command stat_command(commands, "stat", "print db stats");
   args::Command list_command(commands, "list", "list backups");
-  args::Command filelist_command(commands, "filelist",
-                                 "list all files in all backups");
+  args::Command filelist_command(
+    commands, "filelist", "list all files in all backups");
   args::Command check_command(commands, "check", "check hash integrity");
   args::Command move_to_command(commands, "moveto", "duplicate db");
-  args::ValueFlag<string> target_db(move_to_command, "targetdb",
+  args::ValueFlag<string> target_db(move_to_command,
+                                    "targetdb",
                                     "target path of db to move to",
-                                    {"targetdb"}, args::Options::Required);
+                                    { "targetdb" },
+                                    args::Options::Required);
 
   args::Command join_command(
-      commands, "join", "Import backups from source db into this database");
-  args::ValueFlag<string> source_db(join_command, "source_db",
+    commands, "join", "Import backups from source db into this database");
+  args::ValueFlag<string> source_db(join_command,
+                                    "source_db",
                                     "target path of db to move to",
-                                    {"source_db"}, args::Options::Required);
+                                    { "source_db" },
+                                    args::Options::Required);
 
-  args::Command extract_command(commands, "extract",
-                                "extract file to a target path");
-  args::ValueFlag<string> file_name(extract_command, "file",
+  args::Command extract_command(
+    commands, "extract", "extract file to a target path");
+  args::ValueFlag<string> file_name(extract_command,
+                                    "file",
                                     "file to output, syntax: dbname:filepath",
-                                    {"file"}, args::Options::Required);
-  args::ValueFlag<string> file_target_path(extract_command, "target",
+                                    { "file" },
+                                    args::Options::Required);
+  args::ValueFlag<string> file_target_path(extract_command,
+                                           "target",
                                            "target path to store file",
-                                           {"target"}, args::Options::Required);
+                                           { "target" },
+                                           args::Options::Required);
 
-  args::Command serve_command(commands, "serve",
-                              "record changes to the repository");
-  args::ValueFlag<string> port(serve_command, "port", "port of server",
-                               {"port"}, "9090");
+  args::Command serve_command(
+    commands, "serve", "record changes to the repository");
+  args::ValueFlag<string> port(
+    serve_command, "port", "port of server", { "port" }, "9090");
 
-  args::Command fix_command(commands, "fix",
-                            "record changes to the repository");
+  args::Command fix_command(
+    commands, "fix", "record changes to the repository");
 
   args::Command export_images_command(
-      commands, "export_images",
-      "export all jpeg and png files to a directory");
+    commands, "export_images", "export all jpeg and png files to a directory");
 
-  args::ValueFlag<string> export_images_path(
-      export_images_command, "target_dir", "target path to export images to",
-      {"target_dir"}, args::Options::Required);
-  args::ValueFlag<uint64_t> min_size(
-      export_images_command, "min_size", "minimum filesize to export an image",
-      {"min_size"}, 0);
+  args::ValueFlag<string> export_images_path(export_images_command,
+                                             "target_dir",
+                                             "target path to export images to",
+                                             { "target_dir" },
+                                             args::Options::Required);
+  args::ValueFlag<uint64_t> min_size(export_images_command,
+                                     "min_size",
+                                     "minimum filesize to export an image",
+                                     { "min_size" },
+                                     0);
 
-  args::HelpFlag help(parser, "help", "Display this help menu", {'h', "help"});
-  args::CompletionFlag completion(parser, {"complete"});
+  args::HelpFlag help(
+    parser, "help", "Display this help menu", { 'h', "help" });
+  args::CompletionFlag completion(parser, { "complete" });
 
   try {
     parser.ParseCLI(argc, argv);
@@ -1629,7 +1829,9 @@ int main(int argc, char** argv) {
   if (archive_command) {
     auto arch_path_str = args::get(arch_path);
     GFile* file = g_file_new_for_path(arch_path_str.c_str());
-    backup(file, args::get(arch_name), args::get(arch_description),
+    backup(file,
+           args::get(arch_name),
+           args::get(arch_description),
            args::get(arch_ignore_hidden));
   } else if (stat_command) {
     db->print_stat();
