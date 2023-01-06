@@ -342,8 +342,13 @@ struct MDB_DB : public DB
 
   ~MDB_DB()
   {
-    mdb_env_sync(env, 1);
-    mdb_dbi_close(env, dbi);
+    std::cerr << "closing database" << db_path << std::endl;
+
+    if (read_only == ReadOnly::No)
+      c(mdb_env_sync(env, 1));
+    // c(mdb_dbi_close(env, dbi)); // should not be needed after env close
+    mdb_env_close(env);
+    std::cerr << "database closed" << std::endl;
   }
 
   // classic byte pointer put function
@@ -418,6 +423,8 @@ struct MDB_DB : public DB
     c(mdb_txn_begin(
       env, NULL, read_only == ReadOnly::Yes ? MDB_RDONLY : 0, &txn));
     mdb_stat(txn, dbi, &stat);
+    c(mdb_txn_commit(txn));
+
     auto db_size = stat.ms_psize * (stat.ms_leaf_pages + stat.ms_branch_pages +
                                     stat.ms_overflow_pages);
     std::cout << "size: " << db_size << " " << user_readable_size(db_size)
@@ -451,8 +458,8 @@ struct MDB_DB : public DB
         break;
     }
 
-    mdb_txn_commit(txn);
     mdb_cursor_close(cursor);
+    mdb_txn_commit(txn);
   }
 
   void check_all()
@@ -1201,7 +1208,6 @@ output_file(string path, string target_path)
               }
               outfile.flush();
             }
-            throw StringException("Found File");
           } else {
             if (entry.name >= search_path)
               throw StringException("Problem with path");
