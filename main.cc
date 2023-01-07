@@ -105,7 +105,7 @@ get_hash(uint8_t* data, uint64_t len)
   if (blake2b(hash->data(), HASH_BYTES, data, len, blakekey, BLAKE2B_KEYBYTES) <
       0)
     throw StringException("hash problem");
-  return move(hash);
+  return hash;
 }
 
 PBytes
@@ -157,7 +157,7 @@ struct DB
       make_unique<Bytes>(contiguous_buf.begin(), contiguous_buf.end());
     auto key = get_hash(*data);
     this->put(*key, *data, NOOVERWRITE);
-    return move(key);
+    return key;
   }
 
   template<typename T>
@@ -1059,7 +1059,7 @@ get_root_hash(DB& db)
 {
   string root_str("ROOT");
   auto root_hash = db.get((uint8_t*)&root_str[0], root_str.size());
-  return move(root_hash);
+  return root_hash;
 }
 
 void
