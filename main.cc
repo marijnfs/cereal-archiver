@@ -1061,7 +1061,7 @@ enumerate(GFile* root, GFile* path, bool ignore_hidden = false)
   // get the dir timestamp
   uint64_t timestamp = 0;
   char* base_name_c = g_file_get_basename(path);
-  cout << "test: " << base_name_c << endl;
+  
   string base_name;
   if (base_name_c)
     {
