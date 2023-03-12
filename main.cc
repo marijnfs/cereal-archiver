@@ -57,7 +57,25 @@ enum class EntryType
   MULTIFILE
 };
 
-using namespace std;
+// using namespace std;
+
+using std::vector, std::map, std::cout, std::cerr, std::endl, std::unique_ptr, std::move;
+using std::make_unique, std::function, std::ofstream, std::ifstream, std::queue, std::stack, std::istringstream, std::ostringstream;
+
+struct string : public std::string {
+  string() : std::string(){}
+
+  string(const char *ptr): std::string(ptr ? ptr : "") {
+    if (ptr == 0)
+      ;
+  }
+
+  string(const char *ptr, size_t len) : std::string(ptr, len) {}
+
+  string(std::string self) : std::string(self) {}
+
+  template <class InputIterator> string(InputIterator first, InputIterator last): std::string(first, last) {}
+};
 
 void
 init_blakekey()
@@ -920,7 +938,7 @@ enumerate(GFile* root, GFile* path, bool ignore_hidden = false)
     g_file_info_get_modification_time(finfo, &gtime);
     uint64_t timestamp = gtime.tv_sec;
 
-    if (ignore_hidden && relative_path[0] == '.') {
+    if (ignore_hidden && base_name[0] == '.') {
       g_free(relative_path);
       g_free(base_name);
       g_free(full_path);
@@ -1043,9 +1061,15 @@ enumerate(GFile* root, GFile* path, bool ignore_hidden = false)
   // get the dir timestamp
   uint64_t timestamp = 0;
   char* base_name_c = g_file_get_basename(path);
-  string base_name(base_name_c);
-  g_free(base_name_c);
-
+  cout << "test: " << base_name_c << endl;
+  string base_name;
+  if (base_name_c)
+    {
+      
+    base_name = std::string(base_name_c);
+    g_free(base_name_c);
+    }
+  
   uint64_t access = 0;
   bool active = true;
   string content_type;
