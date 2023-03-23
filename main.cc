@@ -323,7 +323,7 @@ struct MDB_DB : public DB
     std::cerr << "opening database: " << db_path << std::endl;
     c(mdb_env_create(&env));
     // c(mdb_env_set_mapsize(env, size_t(1) << 28)); // One TB
-    c(mdb_env_set_mapsize(env, size_t(840) << 30)); // One TB
+    c(mdb_env_set_mapsize(env, size_t(2) << 40)); // One TB
     // c(mdb_env_open(env, DBNAME, MDB_NOSUBDIR, 0664));
     c(mdb_env_open(env,
                    db_path.c_str(),
@@ -1097,6 +1097,10 @@ join(string join_path)
 
       // now add all files
       auto src_backup = other_db->load<Backup>(other_backup_hash);
+      if (src_backup->entry.hash.size() == 0) {
+        print("Issue with backup ", src_backup->name);
+        continue;
+      }
       db->store(*src_backup);
 
       stack<unique_ptr<Dir>> entry_hashes;
