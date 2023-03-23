@@ -71,7 +71,8 @@ struct StringException : public std::exception
   std::string str;
   StringException(std::string msg_)
     : str(msg_)
-  {}
+  {
+  }
 
   const char* what() const noexcept { return str.c_str(); }
 };
@@ -125,7 +126,8 @@ struct DB
   DB(string db_path_, ReadOnly read_only_ = ReadOnly::Yes)
     : db_path(db_path_)
     , read_only(read_only_)
-  {}
+  {
+  }
 
   bool put(Bytes& data)
   {
@@ -1097,7 +1099,7 @@ join(string join_path)
 
       // now add all files
       auto src_backup = other_db->load<Backup>(other_backup_hash);
-      if (src_backup->entry.hash.size() == 0) {
+      if (src_backup->entry.hash.empty()) {
         print("Issue with backup ", src_backup->name);
         continue;
       }
@@ -1116,7 +1118,7 @@ join(string join_path)
 
         for (auto& entry : cur_dir->entries) {
           print("entry: ", entry.name);
-          if (entry.hash.size() == 0) {
+          if (entry.hash.empty()) {
             print("Hash screwed up for entry: ", entry.name);
             err_file << "Hash screwed up for entry: " << entry.name << endl;
             continue;
@@ -1181,6 +1183,8 @@ output_file(string path, string target_path)
       auto start_entry = db->load<Entry>(backup->entry_hash);
       dir = db->load<Dir>(start_entry->hash);
     } else {
+      if (backup->entry.hash.empty())
+        continue;
       dir = db->load<Dir>(backup->entry.hash);
     }
 
@@ -1268,6 +1272,8 @@ list_backups()
 
   for (auto bhash : root->backups) {
     auto backup = db->load<Backup>(bhash);
+    if (!backup || backup->entry.hash.empty())
+      continue;
     print(backup->name,
           " ",
           backup->entry.hash,
@@ -1288,6 +1294,8 @@ fix()
   for (int b(0); b < root->backups.size(); ++b) {
     auto backup_hash = root->backups[b];
     auto backup = db->load<Backup>(backup_hash);
+    if (backup->entry.hash.empty())
+      continue;
     print(backup->name, " ", backup->entry_hash, " ", backup->entry.hash);
 
     if (backup->entry.hash.empty())
@@ -1568,8 +1576,8 @@ serve(string port)
                            << "</a> " << user_readable_size(e.size) << "</li>"
                            << endl;
               if (e.type == EntryType::SINGLEFILE)
-                output_buf << "<li><a href=\"/raw/" << e.hash << "/"
-                           << e.name << "\">" << e.name << "</a> "
+                output_buf << "<li><a href=\"/raw/" << e.hash << "/" << e.name
+                           << "\">" << e.name << "</a> "
                            << user_readable_size(e.size) << "</li>" << endl;
               if (e.type == EntryType::MULTIFILE)
                 output_buf << "<li><a href=\"/rawmulti/" << e.hash << "/"
@@ -1588,6 +1596,8 @@ serve(string port)
                        << endl;
             for (auto bhash : root.backups) {
               auto backup = db->load<Backup>(bhash);
+              if (!backup || backup->entry.hash.empty())
+                continue;
               output_buf << "<li><a href=\"/" << backup->entry.hash << "\">"
                          << backup->name << "</a> "
                          << user_readable_size(backup->size) << "</li>" << endl;
@@ -1795,7 +1805,7 @@ main(int argc, char** argv)
     serve_command, "port", "port of server", { "port" }, "9090");
 
   // args::Command fix_command(
-    // commands, "fix", "record changes to the repository");
+  // commands, "fix", "record changes to the repository");
 
   args::Command export_images_command(
     commands, "export_images", "export all jpeg and png files to a directory");
@@ -1859,7 +1869,7 @@ main(int argc, char** argv)
     join(args::get(source_db));
   } else if (serve_command) {
     serve(args::get(port));
-  // } else if (fix_command) {
+    // } else if (fix_command) {
     // fix();
   } else if (export_images_command) {
     export_images(args::get(export_images_path), args::get(min_size));
